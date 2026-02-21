@@ -6,10 +6,11 @@ interface ForceGraphProps {
   data: GraphData;
   searchQuery: string;
   onNodeClick: (node: TopicNode) => void;
+  onBackgroundClick: () => void;
   selectedNodeId: string | null;
 }
 
-const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick, selectedNodeId }) => {
+const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick, onBackgroundClick, selectedNodeId }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
   const nodesRef = useRef<D3Node[]>([]);
@@ -19,6 +20,7 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
   const [hovered, setHovered] = useState<D3Node | null>(null);
   const animFrameRef = useRef<number>(0);
   const timeRef = useRef(0);
+  const zoomRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
 
   const getNodeRadius = useCallback((node: D3Node) => {
     if (node.depth === 0) return 40;
@@ -149,10 +151,14 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
 
         // Glow
         if (!dimmed) {
-          const glowR = drawR * (isCenter ? 3 : 2);
+          const glowR = drawR * (isCenter ? 3 : isSel ? 2.5 : 2);
           const grad = ctx.createRadialGradient(node.x, node.y, drawR * 0.5, node.x, node.y, glowR);
           if (isCenter) {
             grad.addColorStop(0, `hsla(43, 72%, 52%, ${0.3 * pulse})`);
+            grad.addColorStop(1, 'hsla(43, 72%, 52%, 0)');
+          } else if (isSel) {
+            const selPulse = Math.sin(time * 3) * 0.1 + 0.25;
+            grad.addColorStop(0, `hsla(43, 72%, 52%, ${selPulse})`);
             grad.addColorStop(1, 'hsla(43, 72%, 52%, 0)');
           } else {
             grad.addColorStop(0, `hsla(43, 60%, 45%, ${isHov ? 0.25 : 0.1})`);
@@ -198,11 +204,19 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
 
         // Label
         if (!dimmed && (isCenter || isHov || isSel || node.depth <= 1)) {
-          ctx.fillStyle = isCenter
-            ? 'hsla(240, 20%, 4%, 1)'
-            : isSel
+          if (isSel) {
+            // "Alive" white label with subtle pulsing glow
+            const labelPulse = Math.sin(time * 2.5) * 0.3 + 0.7;
+            ctx.shadowColor = `hsla(43, 72%, 70%, ${labelPulse})`;
+            ctx.shadowBlur = 8;
+            ctx.fillStyle = `hsla(0, 0%, 100%, ${0.85 + labelPulse * 0.15})`;
+          } else {
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = isCenter
               ? 'hsla(240, 20%, 4%, 1)'
               : 'hsla(40, 20%, 90%, 0.9)';
+          }
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
 
@@ -216,6 +230,9 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
             ctx.font = `500 ${fontSize}px "Space Grotesk", sans-serif`;
             ctx.fillText(node.label, node.x, node.y + drawR + 14);
           }
+          // Reset shadow
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
         }
       }
 
@@ -231,10 +248,13 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
     };
   }, [data, searchQuery, selectedNodeId, getNodeRadius, isHighlighted]);
 
-  // Zoom & pan
+  // Zoom & pan - zoom follows cursor
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
 
     const zoom = d3.zoom<HTMLCanvasElement, unknown>()
       .scaleExtent([0.2, 5])
@@ -242,39 +262,67 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
         transformRef.current = event.transform;
       });
 
-    d3.select(canvas).call(zoom);
+    // Override the zoom to be centered on cursor by translating coordinate system
+    // D3 zoom already follows cursor by default when using .call(zoom)
+    // We just need to offset for our center-based coordinate system
+    const sel = d3.select(canvas);
+    
+    // Custom wheel handler to zoom toward cursor
+    sel.on('wheel.customZoom', (event: WheelEvent) => {
+      event.preventDefault();
+      const currentT = transformRef.current;
+      const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
+      const newK = Math.max(0.2, Math.min(5, currentT.k * scaleFactor));
+      
+      // Mouse position relative to center of screen
+      const mx = event.clientX - w / 2;
+      const my = event.clientY - h / 2;
+      
+      // Zoom toward cursor
+      const newX = mx - (mx - currentT.x) * (newK / currentT.k);
+      const newY = my - (my - currentT.y) * (newK / currentT.k);
+      
+      transformRef.current = d3.zoomIdentity.translate(newX, newY).scale(newK);
+      sel.call(zoom.transform, transformRef.current);
+    }, { passive: false });
+
+    sel.call(zoom).on('wheel.zoom', null); // disable default wheel zoom
 
     // Initial zoom
     const initialTransform = d3.zoomIdentity.scale(1);
-    d3.select(canvas).call(zoom.transform, initialTransform);
+    sel.call(zoom.transform, initialTransform);
+
+    zoomRef.current = zoom;
 
     return () => {
-      d3.select(canvas).on('.zoom', null);
+      sel.on('.zoom', null);
+      sel.on('wheel.customZoom', null);
     };
   }, []);
+
+  // Helper to get node at position
+  const getNodeAt = useCallback((mx: number, my: number): D3Node | null => {
+    const t = transformRef.current;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const x = (mx - t.x - w / 2) / t.k;
+    const y = (my - t.y - h / 2) / t.k;
+
+    for (let i = nodesRef.current.length - 1; i >= 0; i--) {
+      const node = nodesRef.current[i];
+      if (node.x == null || node.y == null) continue;
+      const r = getNodeRadius(node) * 1.5;
+      const dx = node.x - x;
+      const dy = node.y - y;
+      if (dx * dx + dy * dy < r * r) return node;
+    }
+    return null;
+  }, [getNodeRadius]);
 
   // Mouse interaction
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const getNodeAt = (mx: number, my: number): D3Node | null => {
-      const t = transformRef.current;
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      const x = (mx - t.x - w / 2) / t.k;
-      const y = (my - t.y - h / 2) / t.k;
-
-      for (let i = nodesRef.current.length - 1; i >= 0; i--) {
-        const node = nodesRef.current[i];
-        if (node.x == null || node.y == null) continue;
-        const r = getNodeRadius(node) * 1.5;
-        const dx = node.x - x;
-        const dy = node.y - y;
-        if (dx * dx + dy * dy < r * r) return node;
-      }
-      return null;
-    };
 
     const onMove = (e: MouseEvent) => {
       const node = getNodeAt(e.clientX, e.clientY);
@@ -285,17 +333,42 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
 
     const onClick = (e: MouseEvent) => {
       const node = getNodeAt(e.clientX, e.clientY);
-      if (node) onNodeClick(node);
+      if (node) {
+        onNodeClick(node);
+      } else {
+        onBackgroundClick();
+      }
+    };
+
+    const onDblClick = (e: MouseEvent) => {
+      const node = getNodeAt(e.clientX, e.clientY);
+      if (node && node.x != null && node.y != null && zoomRef.current && canvas) {
+        // Animate to center the node
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const currentK = transformRef.current.k;
+        const newTransform = d3.zoomIdentity
+          .translate(-node.x * currentK, -node.y * currentK)
+          .scale(currentK);
+        
+        d3.select(canvas)
+          .transition()
+          .duration(600)
+          .ease(d3.easeCubicInOut)
+          .call(zoomRef.current.transform, newTransform);
+      }
     };
 
     canvas.addEventListener('mousemove', onMove);
     canvas.addEventListener('click', onClick);
+    canvas.addEventListener('dblclick', onDblClick);
 
     return () => {
       canvas.removeEventListener('mousemove', onMove);
       canvas.removeEventListener('click', onClick);
+      canvas.removeEventListener('dblclick', onDblClick);
     };
-  }, [getNodeRadius, onNodeClick]);
+  }, [getNodeAt, onNodeClick, onBackgroundClick]);
 
   return (
     <>

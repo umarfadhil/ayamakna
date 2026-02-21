@@ -36,10 +36,14 @@ function generateAutoLinks(nodes: TopicNode[]): TopicLink[] {
     }
   };
 
-  // Parent-child links
+  // Parent-child links + ensure all depth-1 nodes connect to center
   for (const node of nodes) {
     if (node.parentId) {
       addLink(node.parentId, node.id, 'parent-child', 1);
+    }
+    // Ensure depth 1 nodes always link to center
+    if (node.depth === 1 && node.id !== 'center') {
+      addLink('center', node.id, 'parent-child', 1);
     }
   }
 
@@ -206,6 +210,31 @@ export function addTopic(
   data: GraphData,
   topic: Omit<TopicNode, 'id' | 'createdAt' | 'tags'>
 ): GraphData {
+  // Check if a node with the same label already exists - merge if so
+  const existing = data.nodes.find(
+    n => n.label.toLowerCase() === topic.label.toLowerCase() && n.depth > 0
+  );
+
+  if (existing) {
+    // Merge: update explanation, verse, etc. but keep same node
+    const updatedNodes = data.nodes.map(n => {
+      if (n.id !== existing.id) return n;
+      const allText = [topic.labelEn, topic.labelId, topic.explanation || '', n.explanation || ''].join(' ');
+      return {
+        ...n,
+        verse: topic.verse || n.verse,
+        explanation: topic.explanation || n.explanation,
+        explanationId: topic.explanationId || n.explanationId,
+        explanationEn: topic.explanationEn || n.explanationEn,
+        tags: [...new Set([...n.tags, ...extractKeywords(allText)])],
+      };
+    });
+    const links = generateAutoLinks(updatedNodes);
+    const newData = { nodes: updatedNodes, links };
+    saveGraphData(newData);
+    return newData;
+  }
+
   const id = `topic-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const allText = [topic.labelEn, topic.labelId, topic.explanation || ''].join(' ');
   const tags = extractKeywords(allText);
