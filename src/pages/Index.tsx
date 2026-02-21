@@ -24,11 +24,17 @@ const Index = () => {
 
   const handleNodeClick = useCallback((node: TopicNode) => {
     if (node.depth === 0) return;
-    setSelectedNode(node);
+    setSelectedNode(prev => prev?.id === node.id ? null : node);
     if (mode === 'reading') {
       setReadingOpen(true);
     }
   }, [mode]);
+
+  const handleBackgroundClick = useCallback(() => {
+    setSelectedNode(null);
+    setReadingOpen(false);
+    setAdminOpen(false);
+  }, []);
 
   const handleAddTopic = useCallback((topic: Parameters<typeof addTopic>[1] extends GraphData ? never : any) => {
     setData(prev => addTopic(prev, topic));
@@ -53,6 +59,7 @@ const Index = () => {
               data={data}
               searchQuery={searchQuery}
               onNodeClick={handleNodeClick}
+              onBackgroundClick={handleBackgroundClick}
               selectedNodeId={selectedNode?.id || null}
             />
 
@@ -163,7 +170,7 @@ const Index = () => {
               )}
 
               <div className="glass-panel px-4 py-2 text-xs text-muted-foreground">
-                Scroll to zoom · Drag to pan · Click nodes to explore
+                Scroll to zoom · Drag to pan · Click to select · Dbl-click to center
               </div>
             </motion.div>
 
