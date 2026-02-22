@@ -14,6 +14,56 @@ export type Database = {
   }
   public: {
     Tables: {
+      ayamakna_action_edges: {
+        Row: {
+          action_root: string
+          actor_type: string
+          english_meaning: string | null
+          id: string
+          polarity: string
+          root_frequency: number | null
+          semantic_cluster: string | null
+          target_type: string | null
+          tense: string
+          verb_text: string
+          verse_id: string
+        }
+        Insert: {
+          action_root: string
+          actor_type: string
+          english_meaning?: string | null
+          id: string
+          polarity: string
+          root_frequency?: number | null
+          semantic_cluster?: string | null
+          target_type?: string | null
+          tense: string
+          verb_text: string
+          verse_id: string
+        }
+        Update: {
+          action_root?: string
+          actor_type?: string
+          english_meaning?: string | null
+          id?: string
+          polarity?: string
+          root_frequency?: number | null
+          semantic_cluster?: string | null
+          target_type?: string | null
+          tense?: string
+          verb_text?: string
+          verse_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ayamakna_action_edges_verse_id_fkey"
+            columns: ["verse_id"]
+            isOneToOne: false
+            referencedRelation: "ayamakna_verses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ayamakna_concepts: {
         Row: {
           description: string

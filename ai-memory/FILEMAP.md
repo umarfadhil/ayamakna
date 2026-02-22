@@ -36,6 +36,7 @@
 20. `scripts/generate-corpus.mjs` — Node.js script: fetches Quran text + morphology + generates TS data files
 21. `scripts/seed-supabase.mjs` — Seeds all data from TS files into Supabase tables
 22. `scripts/seed-id-translation.mjs` — Seeds Indonesian (Kemenag) translations from alqurancloud into `ayamakna_verses.text_translation_id` (run once; requires temp UPDATE policy)
+23. `scripts/seed-action-edges.mjs` — Seeds precomputed action edges into `ayamakna_action_edges` (run once; requires temp INSERT policy)
 
 ## Store Layer
 23. `src/store/semanticStore.ts` — Orchestrator: Supabase fetch → async init → tokenize → cache validation/recompute fallback → `buildGraphData(mode)`, connected-nodes-only graph; exports `ROOT_KEYWORDS`, `ROOT_TRANSLATIONS`, `CONCEPT_INDONESIAN`, `getTopRoots()`, `getVersesByRoot()`, `getRootContext()`, `getRootCentrality()`, `getRootAnalyticsSummary()`, `getVerseRootsWithData()`, `VerseRootInsight`, `getVerseActionSummary()`, `getActionsByCluster()`

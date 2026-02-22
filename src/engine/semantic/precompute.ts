@@ -10,6 +10,7 @@ import type {
   SemanticCache,
   VerseConcept,
   SimilarityWeights,
+  ActionEdge,
 } from './types';
 import { buildRootIndex, autoLinkByRoot, computeRootAnalytics } from './rootEngine';
 import { detectContrastLinks, contrastLinksToVerseLinks } from './contrastEngine';
@@ -22,7 +23,7 @@ import {
 } from './similarityEngine';
 
 const DB_NAME = 'ayamakna-cache';
-const DB_VERSION = 7; // bumped: enriched ActionEdge with verbText, englishMeaning, cluster, polarity
+const DB_VERSION = 8; // bumped: action edges now loaded from Supabase
 const STORE_NAME = 'semantic';
 const CACHE_KEY = 'main';
 
@@ -41,7 +42,8 @@ export function runPrecompute(
   rootTranslations: Map<string, string> = new Map(),
   weights: SimilarityWeights = DEFAULT_WEIGHTS,
   similarityThreshold: number = DEFAULT_THRESHOLD,
-  rootLinkMinShared: number = 3
+  rootLinkMinShared: number = 3,
+  preloadedActionEdges?: ActionEdge[]
 ): SemanticCache {
   console.time('precompute:rootIndex');
   const rootIndex = buildRootIndex(verses);
@@ -57,7 +59,8 @@ export function runPrecompute(
   console.timeEnd('precompute:contrastLinks');
 
   console.time('precompute:actionEdges');
-  const actionEdges = buildActionIndex(verses, rootTranslations, rootIndex);
+  const actionEdges = preloadedActionEdges ?? buildActionIndex(verses, rootTranslations, rootIndex);
+  if (preloadedActionEdges) console.log('Using preloaded action edges from Supabase');
   const actionLinks = autoLinkByAction(verses, actionEdges);
   console.timeEnd('precompute:actionEdges');
 

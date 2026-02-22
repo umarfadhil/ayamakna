@@ -26,7 +26,7 @@ D3 Canvas-based force graph with spatial indexing, mode-driven edge filtering, c
 
 ## Data Pipeline
 Data stored in **Supabase** (project: `pkwvovoiljwjjgbythsp`):
-- `ayamakna_surahs` (114) → `ayamakna_verses` (6236, incl. `text_translation_id` Indonesian Kemenag) → `ayamakna_root_lookups` (11682) → `ayamakna_concepts` (29) → `ayamakna_verse_concepts` (9092)
+- `ayamakna_surahs` (114) → `ayamakna_verses` (6236, incl. `text_translation_id` Indonesian Kemenag) → `ayamakna_root_lookups` (11682) → `ayamakna_concepts` (29) → `ayamakna_verse_concepts` (9092) → `ayamakna_action_edges` (~15-25K precomputed action edges)
 
 App flow: Supabase fetch → `semanticStore` async init → tokenization → engines → IndexedDB cache → graph data.
 

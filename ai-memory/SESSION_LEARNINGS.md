@@ -143,3 +143,13 @@
 - **Root translation in centrality panel** — centrality insight buttons (most connected, bridge, most frequent) now show Arabic root + English translation side-by-side.
 - **Color scale for root rarity**: `verseFrequency >= 500` → muted; `>= 150` → light gold; `>= 40` → gold; `< 40` → orange (rare, visually prominent).
 - **VerseDetail `verseRoots` prop** is always passed from Index.tsx (not mode-gated), since root analysis provides linguistic insight regardless of active mode.
+
+## Action Edges Persisted to Supabase
+- New table `ayamakna_action_edges` stores precomputed action intelligence (~15-25K rows).
+- Columns: `id` (PK), `verse_id` (FK), `actor_type`, `action_root`, `target_type`, `tense`, `verb_text`, `english_meaning`, `root_frequency`, `semantic_cluster`, `polarity`.
+- RLS: public SELECT-only (same pattern as other tables).
+- Seed script: `scripts/seed-action-edges.mjs` — mirrors client-side tokenizer + action engine logic.
+- `dataLoader.ts` fetches action edges alongside other data in parallel.
+- `runPrecompute()` accepts optional `preloadedActionEdges` param; skips `buildActionIndex()` when provided.
+- `DB_VERSION` bumped 7 → 8 to invalidate stale IndexedDB cache.
+- **Result**: eliminates ~2-3s client-side action computation on first load.

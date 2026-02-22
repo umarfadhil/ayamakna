@@ -271,7 +271,7 @@ export async function initSemanticEngine(): Promise<void> {
       conceptMap.get(vc.verseId)!.push(vc);
     }
 
-    const cache = runPrecompute(verses, conceptMap, _rootTranslations);
+    const cache = runPrecompute(verses, conceptMap, _rootTranslations, undefined, undefined, undefined, data.actionEdges.length > 0 ? data.actionEdges : undefined);
     _semanticCache = cache;
     _rootIndex = cache.rootIndex;
 
