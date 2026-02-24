@@ -1,79 +1,53 @@
 
 
-# Persist Action Intelligence to Supabase
+# Fix Graph Zoom Issues (Mobile Pinch + Double-Click Focus)
 
-## Overview
-Create a new `ayamakna_action_edges` table in Supabase to store precomputed action intelligence for all 6236 verses. The app will load action edges from Supabase instead of recomputing them client-side, significantly reducing initial load time.
+## Problem 1: Mobile Pinch Zoom Doesn't Follow Gesture Center
 
-## What Changes
+**Root cause**: The current code disables D3's built-in zoom (`on('wheel.zoom', null)`) and replaces it with a custom wheel handler. But D3's built-in zoom already handles both wheel AND touch/pinch gestures correctly. By disabling it and only adding a `wheel` listener, pinch-to-zoom on mobile is broken entirely.
 
-### 1. New Supabase Table: `ayamakna_action_edges`
+The custom wheel handler also captures `w` and `h` once at mount, so they go stale on resize.
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `text` PK | Format: `action:{verseId}:{wordId}` |
-| `verse_id` | `text` NOT NULL | FK to `ayamakna_verses.id` |
-| `actor_type` | `text` NOT NULL | One of 10 actor types |
-| `action_root` | `text` NOT NULL | Arabic root of the verb |
-| `target_type` | `text` | Actor type or raw root/text |
-| `tense` | `text` NOT NULL | past/present/future/imperative |
-| `verb_text` | `text` NOT NULL | Actual Arabic verb word |
-| `english_meaning` | `text` | From root translations |
-| `root_frequency` | `integer` | Corpus-wide count |
-| `semantic_cluster` | `text` | One of 10 clusters or null |
-| `polarity` | `text` NOT NULL | positive/negative/neutral |
+**Fix**: Remove the custom wheel handler entirely. Instead, use D3's built-in zoom behavior which natively supports:
+- Mouse wheel zoom centered on cursor
+- Touch pinch-to-zoom centered on pinch midpoint
+- Pan via drag (mouse and touch)
 
-- RLS enabled with public SELECT-only policy (same pattern as other tables).
+The only adaptation needed is to offset the coordinate system since we render with center = (w/2, h/2). We do this by adjusting the zoom's `translateExtent` or by wrapping the transform in the render loop.
 
-### 2. Seed Script: `scripts/seed-action-edges.mjs`
+## Problem 2: Double-Click Doesn't Center on Node
 
-- Loads verses, root lookups, and root translations from Supabase.
-- Runs the tokenizer + action engine (same logic as client-side) in Node.js.
-- Inserts all action edges into `ayamakna_action_edges` in batches.
-- Run once after table creation; requires temporary INSERT policy.
-
-### 3. Data Loader Update (`src/lib/dataLoader.ts`)
-
-- Add `fetchAll` call for `ayamakna_action_edges`.
-- Map to `ActionEdge[]` and include in `LoadedData`.
-
-### 4. Store Update (`src/store/semanticStore.ts`)
-
-- Accept preloaded action edges from Supabase data.
-- Skip `buildActionIndex()` in precompute when Supabase action edges are available.
-- Still run `autoLinkByAction()` on the loaded edges for graph linking.
-- Action queries (`getVerseActions`, `getActionsByCluster`, etc.) work unchanged -- they read from `_semanticCache.actionEdges` which is now Supabase-sourced.
-
-### 5. Precompute Pipeline Update (`src/engine/semantic/precompute.ts`)
-
-- Accept optional pre-built action edges parameter.
-- When provided, skip `buildActionIndex()` and use the supplied edges directly.
-- Bump `DB_VERSION` to 8 to invalidate stale IndexedDB cache.
-
-### 6. Supabase Types Update (`src/integrations/supabase/types.ts`)
-
-- Add `ayamakna_action_edges` table type definition.
-
-### 7. Memory Files Update
-
-- `PROJECT_OVERVIEW.md`: Add `ayamakna_action_edges` table to data pipeline section.
-- `FILEMAP.md`: Add seed script entry.
-- `SESSION_LEARNINGS.md`: Document the migration.
-- `CODE_RULES.md`: No changes needed (existing rules already cover this pattern).
-
-## Technical Details
-
-```text
-Current flow:
-  Supabase fetch --> tokenize --> buildActionIndex() --> cache
-                                  (client-side, ~2-3s)
-
-New flow:
-  Supabase fetch (incl. action_edges) --> use directly --> cache
-                                          (0ms compute)
+**Root cause**: The current double-click handler calculates:
 ```
+translate(-node.x * currentK, -node.y * currentK).scale(currentK)
+```
+This positions the node at the origin of the transform, but the canvas render adds `w/2, h/2` offset. The math is actually correct for centering -- but it doesn't zoom in, which makes it feel broken. Also, the transition may conflict with the custom zoom handler.
 
-- Expected row count: ~15,000-25,000 action edges (one per verb occurrence across 6236 verses).
-- The seed script reuses the same deterministic engine logic, ensuring consistency.
-- `autoLinkByAction()` still runs client-side since verse links are graph-specific and lightweight.
+**Fix**: Compute the transform properly and zoom in slightly (e.g. scale to 2x or clamp to at least 1.5x) so the double-click feels like a "focus" action.
+
+## Changes
+
+### `src/components/graph/ForceGraph.tsx`
+
+**Zoom setup (lines ~247-285)**: Replace the entire zoom+custom wheel block:
+- Use D3 zoom with default wheel and touch handling (do NOT disable `wheel.zoom`)
+- The center-offset is already handled in the render loop (`ctx.translate(t.x + w/2, t.y + h/2)`)
+- D3 zoom naturally zooms toward cursor/pinch center because it tracks pointer position
+- Remove the stale `w`/`h` captures
+
+**Double-click handler (lines ~305-320)**: Fix the transform calculation:
+- Zoom to a target scale (e.g. `Math.max(currentK, 2.0)`)
+- Translate so the node is at screen center: `translate(-node.x * newK, -node.y * newK)`
+- Use smooth animated transition (already has `duration(600)`)
+
+### `src/test/linguisticService.test.ts` (lines 54-61)
+
+Add missing `pos` property to all test token objects to fix the pre-existing build errors (unrelated but blocking).
+
+## Summary (Bullet Diff)
+
+- **Remove** custom `wheel.customZoom` handler -- use D3's native zoom (supports wheel + pinch)
+- **Keep** D3 zoom's default `wheel.zoom` instead of nullifying it
+- **Fix** double-click: zoom to `max(currentK, 2.0)` and center with `translate(-node.x * newK, -node.y * newK)`
+- **Fix** test file: add `pos: 'VERB'` (or similar) to 7 test token objects
 
