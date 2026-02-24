@@ -248,55 +248,32 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
     };
   }, [data, searchQuery, selectedNodeId, getNodeRadius, isHighlighted]);
 
-  // Zoom & pan - zoom follows cursor
+  // Zoom & pan — use D3's native zoom (supports wheel + touch pinch)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-
     const zoom = d3.zoom<HTMLCanvasElement, unknown>()
       .scaleExtent([0.2, 5])
+      .filter((event) => {
+        // Allow wheel, touch, and mouse drag — block double-click zoom (we handle it ourselves)
+        if (event.type === 'dblclick') return false;
+        return true;
+      })
       .on('zoom', (event) => {
         transformRef.current = event.transform;
       });
 
-    // Override the zoom to be centered on cursor by translating coordinate system
-    // D3 zoom already follows cursor by default when using .call(zoom)
-    // We just need to offset for our center-based coordinate system
     const sel = d3.select(canvas);
-    
-    // Custom wheel handler to zoom toward cursor
-    sel.on('wheel.customZoom', (event: WheelEvent) => {
-      event.preventDefault();
-      const currentT = transformRef.current;
-      const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
-      const newK = Math.max(0.2, Math.min(5, currentT.k * scaleFactor));
-      
-      // Mouse position relative to center of screen
-      const mx = event.clientX - w / 2;
-      const my = event.clientY - h / 2;
-      
-      // Zoom toward cursor
-      const newX = mx - (mx - currentT.x) * (newK / currentT.k);
-      const newY = my - (my - currentT.y) * (newK / currentT.k);
-      
-      transformRef.current = d3.zoomIdentity.translate(newX, newY).scale(newK);
-      sel.call(zoom.transform, transformRef.current);
-    }, { passive: false });
-
-    sel.call(zoom).on('wheel.zoom', null); // disable default wheel zoom
+    sel.call(zoom);
 
     // Initial zoom
-    const initialTransform = d3.zoomIdentity.scale(1);
-    sel.call(zoom.transform, initialTransform);
+    sel.call(zoom.transform, d3.zoomIdentity.scale(1));
 
     zoomRef.current = zoom;
 
     return () => {
       sel.on('.zoom', null);
-      sel.on('wheel.customZoom', null);
     };
   }, []);
 
@@ -343,13 +320,11 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ data, searchQuery, onNodeClick,
     const onDblClick = (e: MouseEvent) => {
       const node = getNodeAt(e.clientX, e.clientY);
       if (node && node.x != null && node.y != null && zoomRef.current && canvas) {
-        // Animate to center the node
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        const currentK = transformRef.current.k;
+        // Focus: zoom in and center the node
+        const newK = Math.max(transformRef.current.k, 2.0);
         const newTransform = d3.zoomIdentity
-          .translate(-node.x * currentK, -node.y * currentK)
-          .scale(currentK);
+          .translate(-node.x * newK, -node.y * newK)
+          .scale(newK);
         
         d3.select(canvas)
           .transition()

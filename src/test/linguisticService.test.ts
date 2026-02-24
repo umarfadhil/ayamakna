@@ -51,14 +51,14 @@ describe('getVerseLinguisticRoots', () => {
 
   beforeEach(() => {
     const tokens: VerseToken[] = [
-      { id: 't1', verseId: VERSE_ID, surface: 'اللَّهُ', lemma: 'الله', root: 'اله', position: 0 },
-      { id: 't2', verseId: VERSE_ID, surface: 'لَا', lemma: 'لا', root: null, position: 1 },
-      { id: 't3', verseId: VERSE_ID, surface: 'إِلَٰهَ', lemma: 'إله', root: 'اله', position: 2 }, // duplicate root
-      { id: 't4', verseId: VERSE_ID, surface: 'إِلَّا', lemma: 'الا', root: null, position: 3 },
-      { id: 't5', verseId: VERSE_ID, surface: 'هُوَ', lemma: 'هو', root: 'هوي', position: 4 },
-      { id: 't6', verseId: VERSE_ID, surface: 'الْحَيُّ', lemma: 'حي', root: 'حيي', position: 5 },
+      { id: 't1', verseId: VERSE_ID, surface: 'اللَّهُ', lemma: 'الله', root: 'اله', pos: 'NOUN', position: 0 },
+      { id: 't2', verseId: VERSE_ID, surface: 'لَا', lemma: 'لا', root: null, pos: 'PART', position: 1 },
+      { id: 't3', verseId: VERSE_ID, surface: 'إِلَٰهَ', lemma: 'إله', root: 'اله', pos: 'NOUN', position: 2 }, // duplicate root
+      { id: 't4', verseId: VERSE_ID, surface: 'إِلَّا', lemma: 'الا', root: null, pos: 'PART', position: 3 },
+      { id: 't5', verseId: VERSE_ID, surface: 'هُوَ', lemma: 'هو', root: 'هوي', pos: 'PRON', position: 4 },
+      { id: 't6', verseId: VERSE_ID, surface: 'الْحَيُّ', lemma: 'حي', root: 'حيي', pos: 'ADJ', position: 5 },
       // Contaminated token — English word as root (should be rejected)
-      { id: 't7', verseId: VERSE_ID, surface: 'القيوم', lemma: 'قيوم', root: 'Blessing', position: 6 },
+      { id: 't7', verseId: VERSE_ID, surface: 'القيوم', lemma: 'قيوم', root: 'Blessing', pos: 'NOUN', position: 6 },
     ];
     setVerseTokens(tokens);
   });
