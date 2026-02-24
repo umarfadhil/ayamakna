@@ -64,6 +64,42 @@ export type Database = {
           },
         ]
       }
+      ayamakna_concept_graph_edges: {
+        Row: {
+          concept_a: string
+          concept_b: string
+          shared_verse_count: number
+          strength: number
+        }
+        Insert: {
+          concept_a: string
+          concept_b: string
+          shared_verse_count?: number
+          strength?: number
+        }
+        Update: {
+          concept_a?: string
+          concept_b?: string
+          shared_verse_count?: number
+          strength?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ayamakna_concept_graph_edges_concept_a_fkey"
+            columns: ["concept_a"]
+            isOneToOne: false
+            referencedRelation: "ayamakna_concepts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ayamakna_concept_graph_edges_concept_b_fkey"
+            columns: ["concept_b"]
+            isOneToOne: false
+            referencedRelation: "ayamakna_concepts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ayamakna_concepts: {
         Row: {
           description: string
@@ -84,6 +120,35 @@ export type Database = {
           name_ar?: string | null
         }
         Relationships: []
+      }
+      ayamakna_root_concepts: {
+        Row: {
+          concept_id: string
+          root: string
+          verse_count: number
+          weight: number
+        }
+        Insert: {
+          concept_id: string
+          root: string
+          verse_count?: number
+          weight?: number
+        }
+        Update: {
+          concept_id?: string
+          root?: string
+          verse_count?: number
+          weight?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ayamakna_root_concepts_concept_id_fkey"
+            columns: ["concept_id"]
+            isOneToOne: false
+            referencedRelation: "ayamakna_concepts"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       ayamakna_root_lookups: {
         Row: {
@@ -112,6 +177,36 @@ export type Database = {
         Update: {
           root?: string
           translation?: string
+        }
+        Relationships: []
+      }
+      ayamakna_root_verse_links: {
+        Row: {
+          hop_count: number
+          id: number
+          semantic_cluster: string
+          shared_roots_count: number
+          similarity_score: number
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Insert: {
+          hop_count?: number
+          id?: number
+          semantic_cluster: string
+          shared_roots_count: number
+          similarity_score: number
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Update: {
+          hop_count?: number
+          id?: number
+          semantic_cluster?: string
+          shared_roots_count?: number
+          similarity_score?: number
+          verse_a_id?: string
+          verse_b_id?: string
         }
         Relationships: []
       }
@@ -165,6 +260,44 @@ export type Database = {
           },
           {
             foreignKeyName: "ayamakna_verse_concepts_verse_id_fkey"
+            columns: ["verse_id"]
+            isOneToOne: false
+            referencedRelation: "ayamakna_verses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ayamakna_verse_tokens: {
+        Row: {
+          id: string
+          lemma: string
+          pos: string | null
+          position: number
+          root: string | null
+          surface: string
+          verse_id: string
+        }
+        Insert: {
+          id: string
+          lemma: string
+          pos?: string | null
+          position: number
+          root?: string | null
+          surface: string
+          verse_id: string
+        }
+        Update: {
+          id?: string
+          lemma?: string
+          pos?: string | null
+          position?: number
+          root?: string | null
+          surface?: string
+          verse_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ayamakna_verse_tokens_verse_id_fkey"
             columns: ["verse_id"]
             isOneToOne: false
             referencedRelation: "ayamakna_verses"
