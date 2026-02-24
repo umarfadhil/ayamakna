@@ -4,8 +4,10 @@
 
 import { supabase } from './supabase';
 import type { Verse } from '@/engine/linguistic/types';
-import type { Concept, VerseConcept, ActionEdge } from '@/engine/semantic/types';
+import type { Concept, VerseConcept, ActionEdge, VerseLink } from '@/engine/semantic/types';
 import type { SemanticCluster, ActionPolarity } from '@/engine/semantic/actionDictionaries';
+import type { VerseToken } from '@/services/linguistic/linguisticService';
+import type { RootConceptEntry, ConceptGraphEdge } from '@/services/semantic/semanticDomainService';
 
 export interface SurahInfo {
   number: number;
@@ -22,6 +24,13 @@ export interface LoadedData {
   concepts: Concept[];
   verseConcepts: VerseConcept[];
   actionEdges: ActionEdge[];
+  // Service A — Linguistic layer
+  verseTokens: VerseToken[];
+  // Service B — Semantic layer
+  rootConcepts: RootConceptEntry[];
+  conceptGraphEdges: ConceptGraphEdge[];
+  // Precomputed root verse links (from ayamakna_root_verse_links)
+  rootVerseLinks: VerseLink[];
 }
 
 const DIACRITICS = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED]/g;
@@ -54,7 +63,7 @@ async function fetchAll<T>(table: string, columns: string): Promise<T[]> {
 export async function loadDataFromSupabase(): Promise<LoadedData> {
   console.time('supabase:load');
 
-  const [rawVerses, rawSurahs, rawRoots, rawRootTrans, rawConcepts, rawVC, rawActionEdges] = await Promise.all([
+  const [rawVerses, rawSurahs, rawRoots, rawRootTrans, rawConcepts, rawVC, rawActionEdges, rawVerseTokens, rawRootConcepts, rawConceptEdges, rawRootVerseLinks] = await Promise.all([
     fetchAll<{ id: string; surah_id: number; ayah_number: number; text_arabic: string; text_translation: string; text_translation_id: string | null }>(
       'ayamakna_verses', 'id,surah_id,ayah_number,text_arabic,text_translation,text_translation_id'
     ),
@@ -80,6 +89,22 @@ export async function loadDataFromSupabase(): Promise<LoadedData> {
       semantic_cluster: string | null; polarity: string;
     }>(
       'ayamakna_action_edges', 'id,verse_id,actor_type,action_root,target_type,tense,verb_text,english_meaning,root_frequency,semantic_cluster,polarity'
+    ),
+    // Service A — Linguistic layer: verse tokens (ground truth)
+    fetchAll<{ id: string; verse_id: string; surface: string; lemma: string; root: string | null; pos: string | null; position: number }>(
+      'ayamakna_verse_tokens', 'id,verse_id,surface,lemma,root,pos,position'
+    ),
+    // Service B — Semantic layer: root→concept associations
+    fetchAll<{ root: string; concept_id: string; weight: number; verse_count: number }>(
+      'ayamakna_root_concepts', 'root,concept_id,weight,verse_count'
+    ),
+    // Service B — Semantic layer: concept co-occurrence graph
+    fetchAll<{ concept_a: string; concept_b: string; strength: number; shared_verse_count: number }>(
+      'ayamakna_concept_graph_edges', 'concept_a,concept_b,strength,shared_verse_count'
+    ),
+    // Precomputed root verse links (direct hop=1 + multi-hop hop=2 via concept neighbor)
+    fetchAll<{ verse_a_id: string; verse_b_id: string; shared_roots_count: number; semantic_cluster: string; similarity_score: number; hop_count: number }>(
+      'ayamakna_root_verse_links', 'verse_a_id,verse_b_id,shared_roots_count,semantic_cluster,similarity_score,hop_count'
     ),
   ]);
 
@@ -140,8 +165,52 @@ export async function loadDataFromSupabase(): Promise<LoadedData> {
     polarity: (a.polarity ?? 'neutral') as ActionPolarity,
   }));
 
-  console.timeEnd('supabase:load');
-  console.log(`Loaded: ${verses.length} verses, ${surahs.length} surahs, ${rootLookup.size} roots, ${rootTranslations.size} root translations, ${concepts.length} concepts, ${verseConcepts.length} verse-concepts, ${actionEdges.length} action edges`);
+  // Map Service A data: verse_tokens
+  const verseTokens: VerseToken[] = rawVerseTokens.map((t) => ({
+    id: t.id,
+    verseId: t.verse_id,
+    surface: t.surface,
+    lemma: t.lemma,
+    root: t.root,
+    pos: t.pos,
+    position: t.position,
+  }));
 
-  return { verses, surahs, rootLookup, rootTranslations, concepts, verseConcepts, actionEdges };
+  // Map Service B data: root_concepts
+  const rootConcepts: RootConceptEntry[] = rawRootConcepts.map((r) => ({
+    root: r.root,
+    conceptId: r.concept_id,
+    weight: r.weight,
+    verseCount: r.verse_count,
+  }));
+
+  // Map Service B data: concept_graph_edges
+  const conceptGraphEdges: ConceptGraphEdge[] = rawConceptEdges.map((e) => ({
+    conceptA: e.concept_a,
+    conceptB: e.concept_b,
+    strength: e.strength,
+    sharedVerseCount: e.shared_verse_count,
+  }));
+
+  // Map precomputed root verse links → VerseLink[]
+  const rootVerseLinks: VerseLink[] = rawRootVerseLinks.map((r) => ({
+    verseA: r.verse_a_id,
+    verseB: r.verse_b_id,
+    similarityScore: r.similarity_score,
+    linkType: 'root',
+    sharedRootsCount: r.shared_roots_count,
+    semanticCluster: r.semantic_cluster,
+    hopCount: r.hop_count ?? 1,
+  }));
+
+  console.timeEnd('supabase:load');
+  console.log(
+    `Loaded: ${verses.length} verses, ${surahs.length} surahs, ${rootLookup.size} roots, ` +
+    `${rootTranslations.size} root translations, ${concepts.length} concepts, ` +
+    `${verseConcepts.length} verse-concepts, ${actionEdges.length} action edges, ` +
+    `${verseTokens.length} verse tokens, ${rootConcepts.length} root-concepts, ` +
+    `${conceptGraphEdges.length} concept graph edges, ${rootVerseLinks.length} root verse links`
+  );
+
+  return { verses, surahs, rootLookup, rootTranslations, concepts, verseConcepts, actionEdges, verseTokens, rootConcepts, conceptGraphEdges, rootVerseLinks };
 }

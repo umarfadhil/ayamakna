@@ -8,23 +8,23 @@
 3. `src/engine/linguistic/index.ts` â€” Barrel export
 
 ### Layer B — Semantic Engine
-4. `src/engine/semantic/types.ts` — Concept, VerseConcept, VerseLink, RootIndex, ActionEdge (enriched: verbText, englishMeaning, rootFrequency, semanticCluster, polarity), ActionSummary, ConceptActionComparison, ContrastPair, ContrastLink, SimilarityResult, SemanticCache, SemanticMode, ActorType (10 types), RootAnalytics, RootCentrality, RootContext, RootDensityScore
+4. `src/engine/semantic/types.ts` — Concept, VerseConcept, VerseLink (incl. `sharedRootsCount?`, `semanticCluster?`), RootIndex, ActionEdge (enriched: verbText, englishMeaning, rootFrequency, semanticCluster, polarity), ActionSummary, ConceptActionComparison, ContrastPair, ContrastLink, SimilarityResult, SemanticCache, SemanticMode, ActorType (10 types), RootAnalytics, RootCentrality, RootContext, RootDensityScore
 4a. `src/engine/semantic/actionDictionaries.ts` — SemanticCluster (10 categories), ActionPolarity, ACTION_CLUSTER_MAP (~130 roots), ACTION_POLARITY_MAP (~50 roots), SEMANTIC_CLUSTER_LABELS, POLARITY_LABELS, expanded actor indicator sets (PROPHET_INDICATORS, HYPOCRITE_INDICATORS, SHAYTAN_INDICATORS, MANKIND_INDICATORS)
-5. `src/engine/semantic/rootEngine.ts` — Root frequency index (inverted), root→verse mapping, root-density scoring, auto-link by shared roots (O(R×V_r²)), `computeRootAnalytics()` (degree centrality, betweenness heuristic, frequency ranking, density heatmap, context per root)
+5. `src/engine/semantic/rootEngine.ts` — Root frequency index (inverted), root→verse mapping, root-density scoring, `autoLinkByRoot()` (semantic cluster filtering via rootConceptMap, inverted index O(R×V_r²), returns sharedRootsCount + semanticCluster per link), `computeRootAnalytics()` (degree centrality, betweenness heuristic, frequency ranking, density heatmap, context per root)
 6. `src/engine/semantic/contrastEngine.ts` — Contrast dictionary (17 pairs), detect contrast links via root→verse index, capped at 200/pair
 7. `src/engine/semantic/actionEngine.ts` — Actor classification (10 types with priority ordering), tense detection, target classification, enriched action edge extraction (verbText, englishMeaning, rootFrequency, semanticCluster, polarity), computeActionSummary(), auto-link capped at 5000
 8. `src/engine/semantic/similarityEngine.ts` — Sparse candidate-pair similarity (root+concept+verb), threshold 0.3, max 15000 results
-9. `src/engine/semantic/precompute.ts` — Full pipeline orchestrator, IndexedDB async cache (24h TTL, DB_VERSION=7), cache payload shape guards, integrates rootAnalytics, threads rootTranslations to buildActionIndex
+9. `src/engine/semantic/precompute.ts` — Full pipeline orchestrator, IndexedDB async cache (24h TTL, DB_VERSION=9), cache payload shape guards, integrates rootAnalytics, threads rootTranslations to buildActionIndex; accepts `rootConceptMap?` + `preloadedRootLinks?` (when provided skips client-side autoLinkByRoot)
 10. `src/engine/semantic/index.ts` — Barrel export
 
 ### Layer C — Visualization Engine
-11. `src/engine/visualization/types.ts` — GraphNode (incl. `searchTokens?`, `heatScore?`, `centralityScore?`), GraphEdge, GraphConfig, LINK_COLORS, defaults
+11. `src/engine/visualization/types.ts` — GraphNode (incl. `searchTokens?`, `heatScore?`, `centralityScore?`, `sharedRootsCount?`, `rootVerseFrequency?`, `semanticCluster?`), GraphEdge (incl. `sharedRootsCount?`), GraphConfig, LINK_COLORS, defaults
 12. `src/engine/visualization/index.ts` — Barrel export
 13. `src/engine/index.ts` — Top-level barrel
 
 ## Supabase Integration
 14. `src/lib/supabase.ts` — Supabase client singleton (project: pkwvovoiljwjjgbythsp)
-15. `src/lib/dataLoader.ts` — Async data fetcher: loads surahs, verses (incl. text_translation_id), root lookups, concepts, verse-concepts from Supabase with paginated fetching
+15. `src/lib/dataLoader.ts` — Async data fetcher: loads surahs, verses (incl. text_translation_id), root lookups, concepts, verse-concepts, action edges, verse tokens, root concepts, concept graph edges, and `ayamakna_root_verse_links` from Supabase with paginated fetching
 
 ## Data Layer (Legacy — used by seed script only)
 16. `src/data/quranVerses.ts` — 6236 verses (114 surahs), Arabic + English translations (2.7MB)
@@ -37,18 +37,30 @@
 21. `scripts/seed-supabase.mjs` — Seeds all data from TS files into Supabase tables
 22. `scripts/seed-id-translation.mjs` — Seeds Indonesian (Kemenag) translations from alqurancloud into `ayamakna_verses.text_translation_id` (run once; requires temp UPDATE policy)
 23. `scripts/seed-action-edges.mjs` — Seeds precomputed action edges into `ayamakna_action_edges` (run once; requires temp INSERT policy)
+24. `scripts/seed-linguistic-data.mjs` — Seeds `ayamakna_verse_tokens` (82456 rows) + `ayamakna_root_concepts` (9686 rows) from existing Supabase data. Requires temp INSERT+DELETE policies for both tables.
+25. `scripts/seed-root-links.mjs` — Seeds `ayamakna_root_verse_links` (semantic root-based verse connections). Uses verse_tokens + root_concepts; config: MAX_VERSE_FREQ=500, MIN_SHARED_ROOTS=1, MAX_LINKS_PER_VERSE=20. Requires temp INSERT+DELETE policies.
+
+## Service Layer (Two-Layer Root Intelligence)
+
+### Service A — Linguistic Core (Deterministic)
+S1. `src/services/linguistic/linguisticService.ts` — reads ONLY from `ayamakna_verse_tokens`. Exports: `setVerseTokens()`, `getVerseLinguisticRoots(verseId)`, `getVerseTokensOrdered()`, `isRootInVerse()`. No concept/graph access.
+
+### Service B — Semantic AI Layer (Explainable)
+S2. `src/services/semantic/semanticDomainService.ts` — reads from `ayamakna_root_concepts` + `ayamakna_concept_graph_edges`. Exports: `setRootConcepts()`, `setConceptGraphEdges()`, `setConceptNames()`, `getVerseSemanticDomains(linguisticRoots, limit)`, `validateDomains()`. Every domain has mandatory trace. Depth=1 only.
+
+Types: `VerseToken`, `LinguisticRoots` (service A) · `RootConceptEntry`, `ConceptGraphEdge`, `SemanticDomain`, `DomainTrace` (service B)
 
 ## Store Layer
-23. `src/store/semanticStore.ts` — Orchestrator: Supabase fetch → async init → tokenize → cache validation/recompute fallback → `buildGraphData(mode)`, connected-nodes-only graph; exports `ROOT_KEYWORDS`, `ROOT_TRANSLATIONS`, `CONCEPT_INDONESIAN`, `getTopRoots()`, `getVersesByRoot()`, `getRootContext()`, `getRootCentrality()`, `getRootAnalyticsSummary()`, `getVerseRootsWithData()`, `VerseRootInsight`, `getVerseActionSummary()`, `getActionsByCluster()`
+23. `src/store/semanticStore.ts` — Orchestrator: Supabase fetch → wires Service A (`setVerseTokens`) + Service B (`setRootConcepts`, `setConceptGraphEdges`, `setConceptNames`) → async init → builds `_rootConceptMap` (root→primary conceptId, highest weight) → tokenize → cache validation/recompute fallback → passes rootConceptMap + preloadedRootLinks to runPrecompute → `buildGraphData(mode)` computes nodeSharedRoots + rootVerseFrequency + semanticCluster per node; connected-nodes-only graph; exports `ROOT_KEYWORDS`, `ROOT_TRANSLATIONS`, `CONCEPT_INDONESIAN`, `getTopRoots()`, `getVersesByRoot()`, `getRootContext()`, `getRootCentrality()`, `getRootAnalyticsSummary()`, `getVerseRootsWithData()`, `VerseRootInsight`, `getVerseActionSummary()`, `getActionsByCluster()`, **`getVerseLinguisticRootsFromStore(verseId)`** (Service A), **`getVerseSemanticDomains(verseId)`** (Service B)
 24. `src/store/graphStore.ts` — [Legacy] old topic-based graph logic
 
 ## Application Layer
 25. `src/main.tsx` — Entry point
 26. `src/App.tsx` — Router + providers
-27. `src/pages/Index.tsx` — Main page: async engine init + loading screen + SemanticGraph + 5-mode toggle + search (Latin/Indonesian) + VerseDetail panel + Root Mode Panel (centrality insights with root translations, context toggle — no root filter)
+27. `src/pages/Index.tsx` — Main page: async engine init + loading screen + SemanticGraph + 5-mode toggle + search (Latin/Indonesian) + VerseDetail panel + Root Mode Panel (centrality insights with root translations, context toggle — no root filter); `useTypingPlaceholder` returns `{display, currentWord}` with pauseMs=9000; `effectiveSearchQuery` auto-highlights graph from `placeholderWord` when no user search is active in root mode
 
 ## UI Components
-28. `src/components/graph/SemanticGraph.tsx` — D3 Canvas graph with spatial indexing; heatmap coloring in root mode, centrality-based node sizing, root-filter fading, Latin keyword search via `searchTokens`
+28. `src/components/graph/SemanticGraph.tsx` — D3 Canvas graph with spatial indexing; root mode: frequency-based node color (`getRootFrequencyColor`: grey≥500/light-gold≥150/gold≥40/brown<40), shared-root sizing (4+sharedRootsCount/40×20), similarity-based edge spring, edge thickness by sharedRootsCount, custom radial cluster force (RADIAL_RADIUS=320); centrality-based node sizing (other modes); root-filter fading; Latin keyword search via `searchTokens`; **search edges**: when search+isolated both active, dashed cyan edges auto-generated between matched isolated nodes and nearest matched nodes (K=5, fade-in animation, position-refreshed every 60 frames)
 29. `src/components/graph/ForceGraph.tsx` — [Legacy] old D3 topic graph
 30. `src/components/graph/ParticleBackground.tsx` — Ambient particle animation
 31. `src/components/reader/VerseDetail.tsx` — Slide-in panel: Arabic text, English + Indonesian translation, Root Intelligence (per-root badges with translation + frequency), concepts, Action Intelligence (behavioral summary panel, semantic cluster grouping, enriched action rows with polarity/English/frequency, expandable verse context, list/flow mode toggle with mini SVG graph)

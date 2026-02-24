@@ -22,6 +22,9 @@ export interface VerseLink {
   verseB: string;
   similarityScore: number; // 0-1
   linkType: LinkType;
+  sharedRootsCount?: number; // number of semantically-mapped shared roots (root links only)
+  semanticCluster?: string;  // primary concept cluster for the link (root links only)
+  hopCount?: number;         // 1=direct root share, 2=via concept neighbor (multi-layer projection)
 }
 
 // --- Root Engine Types ---

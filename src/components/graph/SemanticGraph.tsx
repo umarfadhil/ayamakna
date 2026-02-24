@@ -19,6 +19,8 @@ interface D3Edge {
   target: D3Node | string;
   linkType: LinkType;
   strength: number;
+  sharedRootsCount?: number;
+  hopCount?: number;
 }
 
 interface SemanticGraphProps {
@@ -29,6 +31,7 @@ interface SemanticGraphProps {
   selectedNodeId: string | null;
   mode: SemanticMode;
   highlightedVerseIds?: Set<string> | null; // when set (root filter active), only these nodes are prominent
+  isolatedNodes?: GraphNode[]; // verses with no edges in current mode
 }
 
 // --- Spatial Index for fast hit testing ---
@@ -108,12 +111,16 @@ function getClusterColor(cluster?: string): string {
   return CLUSTER_COLORS[cluster ?? 'unknown'] ?? CLUSTER_COLORS.unknown;
 }
 
-/** Heatmap color: low density = cool teal, high density = warm gold */
-function getHeatColor(heat: number): string {
-  const h = Math.round(200 - heat * 157); // 200 (teal) → 43 (gold)
-  const s = Math.round(45 + heat * 35);
-  const l = Math.round(35 + heat * 25);
-  return `hsla(${h}, ${s}%, ${l}%, 1)`;
+/**
+ * Root mode: frequency-based node color aligned with VerseDetail badge logic.
+ * grey = high-frequency (common roots), gold/amber = medium, brown = rare.
+ */
+function getRootFrequencyColor(verseFreq?: number): string {
+  if (verseFreq == null) return CLUSTER_COLORS.unknown;
+  if (verseFreq >= 500) return 'hsla(240, 10%, 50%, 1)';  // grey — very common root
+  if (verseFreq >= 150) return 'hsla(43, 55%, 62%, 1)';   // light gold
+  if (verseFreq >= 40)  return 'hsla(35, 70%, 50%, 1)';   // gold/amber
+  return 'hsla(22, 65%, 42%, 1)';                          // brown/orange — rare root
 }
 
 const SemanticGraph: React.FC<SemanticGraphProps> = ({
@@ -124,6 +131,7 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
   selectedNodeId,
   mode,
   highlightedVerseIds,
+  isolatedNodes = [],
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<d3.Simulation<D3Node, D3Edge> | null>(null);
@@ -136,41 +144,111 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
   const timeRef = useRef(0);
   const zoomRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
   const spatialRef = useRef(new SpatialGrid());
+  // Search edges: temporary dashed edges connecting matched isolated nodes to nearest matched nodes
+  const searchEdgesRef = useRef<Array<{source: D3Node; target: D3Node}>>([]);
+  const searchEdgeAlphaRef = useRef(0);       // current rendered opacity (0→0.55, animated)
 
   const getNodeRadius = useCallback((node: D3Node) => {
-    // Root mode: size by centrality importance; other modes: size by link density
-    if (mode === 'root' && node.centralityScore != null) {
-      return 5 + node.centralityScore * 20;
+    // Root mode: size by total shared roots with visible neighbors
+    if (mode === 'root') {
+      if (node.sharedRootsCount != null && node.sharedRootsCount > 0) {
+        return 4 + Math.min(node.sharedRootsCount / 40, 1) * 20;
+      }
+      return 4;
     }
     return 6 + node.weight * 14;
   }, [mode]);
 
   const isHighlighted = useCallback((node: D3Node) => {
     if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      node.label.toLowerCase().includes(q) ||
-      (node.labelAr?.includes(searchQuery) ?? false) ||
-      node.id.includes(q) ||
-      (node.searchTokens?.some((t) => t.includes(q)) ?? false)
-    );
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return true;
+    // Multi-word AND logic: every word in the query must match at least one token
+    const words = q.split(/\s+/).filter(Boolean);
+    return words.every((word) => (
+      node.label.toLowerCase().includes(word) ||
+      (node.labelAr?.toLowerCase().includes(word) ?? false) ||
+      node.id.toLowerCase().includes(word) ||
+      (node.searchTokens?.some((t) => t.includes(word)) ?? false)
+    ));
   }, [searchQuery]);
+
+  // Deferred search-edge computation: runs off the draw loop so connected highlights appear first.
+  // When searchQuery changes, edges are cleared immediately; new edges computed after 80ms.
+  // D3Node references auto-update with simulation positions, so no 60-frame drift refresh needed.
+  useEffect(() => {
+    searchEdgesRef.current = [];
+    searchEdgeAlphaRef.current = 0;
+    if (!searchQuery || !isolatedNodes.length) return;
+    const isoIds = new Set(isolatedNodes.map((n) => n.id));
+    const tid = setTimeout(() => {
+      const allNodes = nodesRef.current;
+      const matchedIso = allNodes.filter((n) => isoIds.has(n.id) && isHighlighted(n) && n.x != null);
+      const matchedAll = allNodes.filter((n) => isHighlighted(n) && n.x != null);
+      const newEdges: Array<{source: D3Node; target: D3Node}> = [];
+      const addedPairs = new Set<string>();
+      for (const iso of matchedIso) {
+        const sorted = matchedAll
+          .filter((n) => n.id !== iso.id)
+          .map((n) => ({ n, d: Math.hypot((n.x ?? 0) - (iso.x ?? 0), (n.y ?? 0) - (iso.y ?? 0)) }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 5);
+        for (const { n } of sorted) {
+          const k = iso.id < n.id ? `${iso.id}|${n.id}` : `${n.id}|${iso.id}`;
+          if (!addedPairs.has(k)) { addedPairs.add(k); newEdges.push({ source: iso, target: n }); }
+        }
+      }
+      searchEdgesRef.current = newEdges;
+    }, 80);
+    return () => clearTimeout(tid);
+  }, [searchQuery, isolatedNodes, isHighlighted]);
 
   // Init simulation
   useEffect(() => {
-    const nodes: D3Node[] = data.nodes.map((n) => ({ ...n }));
+    const connectedIds = new Set(data.nodes.map((n) => n.id));
+    const isolatedIdSet = new Set(isolatedNodes.map((n) => n.id));
+    const nodes: D3Node[] = [
+      ...data.nodes.map((n) => ({ ...n })),
+      ...isolatedNodes.filter((n) => !connectedIds.has(n.id)).map((n) => ({ ...n })),
+    ];
     const edges: D3Edge[] = data.edges.map((e) => ({ ...e }));
 
     nodesRef.current = nodes;
     edgesRef.current = edges;
+
+    // --- Root mode: compute radial cluster positions ---
+    // Groups nodes by semanticCluster and arranges each cluster at an angular position.
+    const RADIAL_RADIUS = 320;
+    let clusterAngleMap: Map<string, number> | null = null;
+    if (mode === 'root') {
+      const clusters = [...new Set(
+        nodes
+          .filter((n) => !isolatedIdSet.has(n.id) && n.semanticCluster)
+          .map((n) => n.semanticCluster!)
+      )];
+      clusterAngleMap = new Map(
+        clusters.map((c, i) => [c, (i / Math.max(clusters.length, 1)) * 2 * Math.PI])
+      );
+    }
 
     const sim = d3.forceSimulation<D3Node>(nodes)
       .force(
         'link',
         d3.forceLink<D3Node, D3Edge>(edges)
           .id((d) => d.id)
-          .distance(100)
-          .strength((d) => d.strength * 0.3)
+          // Edge distance = similarity-based: high similarity → shorter spring → closer nodes.
+          // Max capped at 120 (was 200) so even low-similarity edges keep nodes within visible range.
+          .distance((d) => {
+            if (mode === 'root') {
+              const sim = d.strength;
+              return sim > 0 ? Math.max(35, 120 * (1 - sim * 0.85)) : 130;
+            }
+            return 100;
+          })
+          .strength((d) => {
+            if (mode === 'root') return Math.max(0.15, d.strength * 0.55);
+            return d.strength * 0.3;
+          })
       )
       .force('charge', d3.forceManyBody().strength(-200).distanceMax(400))
       .force('center', d3.forceCenter(0, 0).strength(0.03))
@@ -185,10 +263,27 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
         }
       });
 
+    // Root mode: add gentle radial cluster force (Hybrid Force-Directed + Radial)
+    // Pulls nodes toward their concept cluster's angular position on a ring
+    if (mode === 'root' && clusterAngleMap) {
+      const _clusterAngleMap = clusterAngleMap; // closure capture
+      sim.force('radialCluster', function(alpha: number) {
+        for (const node of nodesRef.current) {
+          if (isolatedIdSet.has(node.id) || !node.semanticCluster) continue;
+          const angle = _clusterAngleMap.get(node.semanticCluster);
+          if (angle == null) continue;
+          const targetX = Math.cos(angle) * RADIAL_RADIUS;
+          const targetY = Math.sin(angle) * RADIAL_RADIUS;
+          if (node.vx != null) node.vx += (targetX - (node.x ?? 0)) * 0.035 * alpha;
+          if (node.vy != null) node.vy += (targetY - (node.y ?? 0)) * 0.035 * alpha;
+        }
+      });
+    }
+
     simRef.current = sim;
 
     return () => { sim.stop(); };
-  }, [data, getNodeRadius]);
+  }, [data, isolatedNodes, getNodeRadius, mode]);
 
   // Canvas rendering
   useEffect(() => {
@@ -208,6 +303,8 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     resize();
     window.addEventListener('resize', resize);
 
+    const isolatedIdSet = new Set(isolatedNodes.map((n) => n.id));
+
     const draw = () => {
       timeRef.current += 0.016;
       const w = window.innerWidth;
@@ -221,6 +318,14 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
       const nodes = nodesRef.current;
       const edges = edgesRef.current;
       const time = timeRef.current;
+
+      // --- Search edge alpha (computation is deferred in a separate useEffect) ---
+      // Connected node highlights apply immediately via isHighlighted(); isolated search edges
+      // fade in ~80ms later once the deferred useEffect populates searchEdgesRef.
+      const hasSearchEdges = !!(searchQuery && isolatedNodes.length > 0);
+      const seTargetAlpha = hasSearchEdges ? 0.55 : 0;
+      searchEdgeAlphaRef.current += (seTargetAlpha - searchEdgeAlphaRef.current) * 0.07;
+      if (!hasSearchEdges) searchEdgesRef.current = [];
 
       // --- Draw edges ---
       for (const edge of edges) {
@@ -240,26 +345,103 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
         const searchDimmed = searchQuery ? (!srcHl || !tgtHl) : false;
 
         const dimmed = rootDimmed || searchDimmed;
-        const color = LINK_COLORS[edge.linkType] ?? '#555';
-        const alpha = dimmed ? 0.03 : 0.12 + edge.strength * 0.25;
+        const isMultiHop = edge.hopCount === 2;
+
+        // Hop=2 multi-hop edges are permanently hidden — too noisy vs. their weak semantic signal
+        if (isMultiHop) continue;
+
+        // Multi-hop (hop=2): dashed, muted gold, dim, thin — visually subordinate to direct links
+        if (isMultiHop) {
+          ctx.setLineDash([4, 5]);
+          ctx.strokeStyle = 'hsla(43, 30%, 58%, 1)'; // muted gold
+          ctx.globalAlpha = dimmed ? 0.02 : 0.10 + edge.strength * 0.16;
+          ctx.lineWidth = 0.5 + edge.strength * 0.6;
+        } else {
+          ctx.setLineDash([]);
+          const color = LINK_COLORS[edge.linkType] ?? '#555';
+          // Root mode: power curve gives ~42-point perceptual range (0.24 → 0.75).
+          // Weak edges fade naturally; strong edges are clearly prominent.
+          const alpha = dimmed ? 0.03
+            : mode === 'root' ? 0.15 + Math.pow(edge.strength, 0.7) * 0.60
+            : 0.12 + edge.strength * 0.25;
+          // Edge thickness: root mode uses sharedRootsCount; others use strength
+          const lineW = mode === 'root' && edge.sharedRootsCount != null
+            ? 0.5 + Math.min(edge.sharedRootsCount, 12) * 0.35
+            : 0.5 + edge.strength * 1.5;
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = lineW;
+        }
 
         ctx.beginPath();
         ctx.moveTo(source.x, source.y);
         ctx.lineTo(target.x, target.y);
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = alpha;
-        ctx.lineWidth = 0.5 + edge.strength * 1.5;
         ctx.stroke();
         ctx.globalAlpha = 1;
+        if (isMultiHop) ctx.setLineDash([]);
       }
+
+      // --- Draw search edges (dashed, animated fade-in, cyan tint) ---
+      const seAlpha = searchEdgeAlphaRef.current;
+      const seEdges = searchEdgesRef.current;
+      if (seAlpha > 0.01 && seEdges.length > 0) {
+        ctx.setLineDash([5, 6]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'hsla(195, 75%, 65%, 1)';
+        // Gentle unified breathing pulse on top of the fade-in
+        const sePulse = 0.75 + Math.sin(time * 2) * 0.15;
+        for (const se of seEdges) {
+          if (se.source.x == null || se.source.y == null || se.target.x == null || se.target.y == null) continue;
+          ctx.beginPath();
+          ctx.moveTo(se.source.x, se.source.y);
+          ctx.lineTo(se.target.x, se.target.y);
+          ctx.globalAlpha = seAlpha * sePulse;
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+      // Set of node IDs that are endpoints of search edges (used to enhance their rendering below)
+      const seNodeIds = seEdges.length > 0
+        ? new Set<string>(seEdges.flatMap(e => [e.source.id, e.target.id]))
+        : new Set<string>();
 
       // --- Draw nodes ---
       for (const node of nodes) {
         if (node.x == null || node.y == null) continue;
 
-        const r = getNodeRadius(node);
+        const isIsolated = isolatedIdSet.has(node.id);
+        const hasSearchEdge = seNodeIds.has(node.id);
+        // Isolated nodes with a search edge are rendered slightly larger so the edge endpoint is visible
+        const r = isIsolated ? (hasSearchEdge ? 4.5 : 3) : getNodeRadius(node);
         const isHov = hoveredRef.current === node.id;
         const isSel = selectedNodeId === node.id;
+
+        // Isolated nodes: render as tiny dim dots (cyan tint + larger when connected via search edge)
+        if (isIsolated) {
+          const searchFaded = searchQuery ? !isHighlighted(node) : false;
+          if (searchFaded && !isHov && !isSel) continue;
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, isHov || isSel ? 5 : r, 0, Math.PI * 2);
+          ctx.fillStyle = isSel
+            ? 'hsla(240, 30%, 65%, 0.9)'
+            : isHov
+            ? 'hsla(240, 25%, 55%, 0.7)'
+            : hasSearchEdge
+            ? `hsla(195, 55%, 52%, ${0.35 + seAlpha * 0.35})`  // cyan tint, opacity tied to edge fade-in
+            : 'hsla(240, 20%, 35%, 0.3)';
+          ctx.fill();
+          ctx.strokeStyle = isSel
+            ? 'hsla(240, 50%, 80%, 0.6)'
+            : hasSearchEdge
+            ? `hsla(195, 65%, 70%, ${0.3 + seAlpha * 0.4})`
+            : 'hsla(240, 15%, 45%, 0.2)';
+          ctx.lineWidth = hasSearchEdge ? 0.8 : 0.5;
+          ctx.setLineDash([2, 3]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          continue;
+        }
 
         // Determine if dimmed (root filter takes priority over search)
         const rootFilterActive = highlightedVerseIds && highlightedVerseIds.size > 0;
@@ -269,10 +451,9 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
 
         const drawR = r * (isHov ? 1.25 : 1);
 
-        // Color: root mode + no filter → heatmap; otherwise cluster color
-        const useHeat = mode === 'root' && !rootFilterActive && node.heatScore != null;
-        const clusterColor = useHeat
-          ? getHeatColor(node.heatScore!)
+        // Color: root mode → frequency-based (grey/gold/brown); other modes → cluster color
+        const clusterColor = mode === 'root'
+          ? getRootFrequencyColor(node.rootVerseFrequency)
           : getClusterColor(node.cluster);
 
         // Glow
@@ -347,7 +528,7 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
       window.removeEventListener('resize', resize);
       cancelAnimationFrame(animFrameRef.current);
     };
-  }, [data, searchQuery, selectedNodeId, getNodeRadius, isHighlighted, mode, highlightedVerseIds]);
+  }, [data, isolatedNodes, searchQuery, selectedNodeId, getNodeRadius, isHighlighted, mode, highlightedVerseIds]);
 
   // Zoom & pan
   useEffect(() => {
@@ -433,10 +614,12 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     const onDblClick = (e: MouseEvent) => {
       const node = getNodeAt(e.clientX, e.clientY);
       if (node?.x != null && node?.y != null && zoomRef.current && canvas) {
-        const currentK = transformRef.current.k;
+        // Zoom to 2.5× centered on the node. Formula: t.x = -node.x * targetK, t.y = -node.y * targetK
+        // because the canvas renders with origin at canvas center (ctx offset by w/2, h/2).
+        const targetK = 2.5;
         const newTransform = d3.zoomIdentity
-          .translate(-node.x * currentK, -node.y * currentK)
-          .scale(currentK);
+          .translate(-node.x * targetK, -node.y * targetK)
+          .scale(targetK);
         d3.select(canvas)
           .transition()
           .duration(600)
@@ -490,9 +673,15 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
               </div>
             )
           )}
-          {mode === 'root' && hovered.heatScore != null && (
+          {mode === 'root' && hovered.rootVerseFrequency != null && (
             <div className="text-muted-foreground text-[10px] mt-0.5">
-              Density: {Math.round(hovered.heatScore * 100)}%
+              Root frequency: {hovered.rootVerseFrequency} verses
+              {hovered.sharedRootsCount != null && ` · ${hovered.sharedRootsCount} shared roots`}
+            </div>
+          )}
+          {mode === 'root' && hovered.semanticCluster && (
+            <div className="text-muted-foreground text-[10px] mt-0.5 uppercase tracking-wider">
+              Cluster: {hovered.semanticCluster}
             </div>
           )}
         </div>

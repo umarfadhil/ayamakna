@@ -68,41 +68,58 @@ export function calculateRootDensity(verses: TokenizedVerse[]): RootDensity[] {
 
 /**
  * Auto-link verses by shared roots using INVERTED INDEX approach.
- * Instead of O(n²) pairwise comparison, iterates over the root index:
- * for each root appearing in multiple verses, links those verses.
  *
- * Time: O(R * V_r²) where R = unique roots, V_r = verses per root.
- * Much faster than O(n²) when most roots appear in few verses.
+ * Core principle (new): Two verses connect if they share at least one identical
+ * triliteral root AND that root maps to a semantic concept cluster.
+ * When rootConceptMap is provided, only semantically-mapped roots create edges.
  *
- * @param minSharedRoots - minimum shared roots to create a link
+ * Time: O(R × V_r²) where R = unique roots, V_r = verses per root.
+ *
+ * @param rootConceptMap - root → primary concept ID (from ayamakna_root_concepts).
+ *   When non-empty, only roots with a concept mapping create links (semantic filtering).
+ * @param minSharedRoots - minimum shared semantic roots to create a link
  * @param maxLinksPerVerse - cap links per verse to prevent explosion
  */
 export function autoLinkByRoot(
   verses: TokenizedVerse[],
   rootIndex: RootIndex,
-  minSharedRoots: number = 3,
+  rootConceptMap: Map<string, string> = new Map(),
+  minSharedRoots: number = 1,
   maxLinksPerVerse: number = 20
 ): VerseLink[] {
-  // Build per-verse root sets
+  const hasConceptMap = rootConceptMap.size > 0;
+
+  // Build per-verse root sets (all roots, used for Jaccard union calculation)
   const verseRootSets = new Map<string, Set<string>>();
   for (const { verse, words } of verses) {
-    const roots = new Set(words.map((w) => w.root).filter(Boolean));
+    const roots = new Set(words.map((w) => w.root).filter(Boolean) as string[]);
     if (roots.size > 0) verseRootSets.set(verse.id, roots);
   }
 
-  // Count shared roots between verse pairs using inverted index
-  // pairKey -> sharedRootCount
-  const pairCounts = new Map<string, number>();
+  // Count shared SEMANTIC roots between verse pairs.
+  // Track both the count and cluster contributions per pair.
+  type PairData = { count: number; clusterCounts: Map<string, number> };
+  const pairData = new Map<string, PairData>();
 
   for (const entry of Object.values(rootIndex)) {
     const vIds = entry.verseIds;
-    // Skip very common roots (appear in >500 verses) to avoid noise
+    // Skip very common roots (>500 verses) — too noisy for meaningful links
     if (vIds.length > 500 || vIds.length < 2) continue;
+
+    // When concept map provided, only process semantically-mapped roots
+    const cluster = hasConceptMap ? rootConceptMap.get(entry.root) : 'root';
+    if (hasConceptMap && !cluster) continue;
 
     for (let i = 0; i < vIds.length; i++) {
       for (let j = i + 1; j < vIds.length; j++) {
         const key = vIds[i] < vIds[j] ? `${vIds[i]}|${vIds[j]}` : `${vIds[j]}|${vIds[i]}`;
-        pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+        const existing = pairData.get(key);
+        if (existing) {
+          existing.count++;
+          existing.clusterCounts.set(cluster!, (existing.clusterCounts.get(cluster!) ?? 0) + 1);
+        } else {
+          pairData.set(key, { count: 1, clusterCounts: new Map([[cluster!, 1]]) });
+        }
       }
     }
   }
@@ -112,11 +129,11 @@ export function autoLinkByRoot(
   const verseLinkCounts = new Map<string, number>();
 
   // Sort by shared count descending to prioritize strongest links
-  const sorted = [...pairCounts.entries()]
-    .filter(([_, count]) => count >= minSharedRoots)
-    .sort((a, b) => b[1] - a[1]);
+  const sorted = [...pairData.entries()]
+    .filter(([_, d]) => d.count >= minSharedRoots)
+    .sort((a, b) => b[1].count - a[1].count);
 
-  for (const [key, sharedCount] of sorted) {
+  for (const [key, data] of sorted) {
     const [idA, idB] = key.split('|');
     const countA = verseLinkCounts.get(idA) ?? 0;
     const countB = verseLinkCounts.get(idB) ?? 0;
@@ -128,9 +145,23 @@ export function autoLinkByRoot(
     if (!rootsA || !rootsB) continue;
 
     const union = new Set([...rootsA, ...rootsB]).size;
-    const score = union > 0 ? sharedCount / union : 0;
+    const score = union > 0 ? data.count / union : 0;
 
-    links.push({ verseA: idA, verseB: idB, similarityScore: score, linkType: 'root' });
+    // Dominant cluster = concept with the most shared root contributions
+    let dominantCluster = '';
+    let maxClusterCount = 0;
+    for (const [c, cnt] of data.clusterCounts) {
+      if (cnt > maxClusterCount) { dominantCluster = c; maxClusterCount = cnt; }
+    }
+
+    links.push({
+      verseA: idA,
+      verseB: idB,
+      similarityScore: score,
+      linkType: 'root',
+      sharedRootsCount: data.count,
+      semanticCluster: dominantCluster || undefined,
+    });
     verseLinkCounts.set(idA, countA + 1);
     verseLinkCounts.set(idB, countB + 1);
   }

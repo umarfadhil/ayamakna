@@ -11,6 +11,7 @@ import type {
   VerseConcept,
   SimilarityWeights,
   ActionEdge,
+  VerseLink,
 } from './types';
 import { buildRootIndex, autoLinkByRoot, computeRootAnalytics } from './rootEngine';
 import { detectContrastLinks, contrastLinksToVerseLinks } from './contrastEngine';
@@ -23,7 +24,7 @@ import {
 } from './similarityEngine';
 
 const DB_NAME = 'ayamakna-cache';
-const DB_VERSION = 8; // bumped: action edges now loaded from Supabase
+const DB_VERSION = 9; // bumped: root links use semantic cluster filtering + stored in Supabase
 const STORE_NAME = 'semantic';
 const CACHE_KEY = 'main';
 
@@ -31,10 +32,16 @@ const CACHE_KEY = 'main';
  * Run the full semantic precomputation pipeline.
  * Optimized for large datasets (6000+ verses):
  * - Root linking uses inverted index (not O(n²))
+ * - Root links filtered by semantic concept cluster (requires shared root + same cluster)
  * - Similarity uses sparse candidate-pair approach
  * - Contrast links capped per pair
  * - Action links capped per pattern
  * - Root analytics: centrality, density heatmap, context
+ *
+ * @param rootConceptMap - root → primary conceptId (from ayamakna_root_concepts).
+ *   Used to filter root links: only semantically-mapped roots create edges.
+ * @param preloadedRootLinks - precomputed root links from Supabase (ayamakna_root_verse_links).
+ *   When provided, skips client-side autoLinkByRoot() computation.
  */
 export function runPrecompute(
   verses: TokenizedVerse[],
@@ -42,15 +49,23 @@ export function runPrecompute(
   rootTranslations: Map<string, string> = new Map(),
   weights: SimilarityWeights = DEFAULT_WEIGHTS,
   similarityThreshold: number = DEFAULT_THRESHOLD,
-  rootLinkMinShared: number = 3,
-  preloadedActionEdges?: ActionEdge[]
+  rootLinkMinShared: number = 1,
+  preloadedActionEdges?: ActionEdge[],
+  rootConceptMap?: Map<string, string>,
+  preloadedRootLinks?: VerseLink[]
 ): SemanticCache {
   console.time('precompute:rootIndex');
   const rootIndex = buildRootIndex(verses);
   console.timeEnd('precompute:rootIndex');
 
   console.time('precompute:rootLinks');
-  const rootLinks = autoLinkByRoot(verses, rootIndex, rootLinkMinShared, 15);
+  let rootLinks: VerseLink[];
+  if (preloadedRootLinks && preloadedRootLinks.length > 0) {
+    rootLinks = preloadedRootLinks;
+    console.log(`Using ${preloadedRootLinks.length} preloaded root verse links from Supabase`);
+  } else {
+    rootLinks = autoLinkByRoot(verses, rootIndex, rootConceptMap ?? new Map(), rootLinkMinShared, 20);
+  }
   console.timeEnd('precompute:rootLinks');
 
   console.time('precompute:contrastLinks');

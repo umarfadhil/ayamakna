@@ -27,8 +27,23 @@ import { stripDiacritics } from '@/engine/linguistic/rootExtractor';
 import { buildRootIndex } from '@/engine/semantic/rootEngine';
 import { computeActionSummary } from '@/engine/semantic/actionEngine';
 import { runPrecompute, loadCache, saveCache, clearCache } from '@/engine/semantic/precompute';
+import { CONTRAST_DICTIONARY } from '@/engine/semantic/contrastEngine';
 import { loadDataFromSupabase } from '@/lib/dataLoader';
 import type { SurahInfo } from '@/lib/dataLoader';
+// Service A — Linguistic Core
+import {
+  setVerseTokens,
+  getVerseLinguisticRoots,
+} from '@/services/linguistic/linguisticService';
+// Service B — Semantic AI Layer
+import {
+  setRootConcepts,
+  setConceptGraphEdges,
+  setConceptNames,
+  getVerseSemanticDomains as _getVerseSemanticDomains,
+  validateDomains,
+} from '@/services/semantic/semanticDomainService';
+export type { SemanticDomain } from '@/services/semantic/semanticDomainService';
 
 // --- Root Translation (loaded from Supabase ayamakna_root_translations) ---
 // Populated during initSemanticEngine(). Covers all 1,651 Quranic roots.
@@ -154,6 +169,15 @@ let _semanticCache: SemanticCache | null = null;
 let _initPromise: Promise<void> | null = null;
 let _rootIndex: RootIndex | null = null;
 let _dataLoaded = false;
+// Root → primary conceptId (built from ayamakna_root_concepts, highest weight per root)
+let _rootConceptMap: Map<string, string> = new Map();
+
+// Root mode focus level — controls minimum similarity threshold for edge visibility
+const ROOT_FOCUS_THRESHOLDS = { broad: 0.28, focused: 0.48, deep: 0.55 } as const;
+export type RootFocusLevel = keyof typeof ROOT_FOCUS_THRESHOLDS;
+let _rootFocusLevel: RootFocusLevel = 'focused';
+export function setRootFocusLevel(level: RootFocusLevel): void { _rootFocusLevel = level; }
+export function getRootFocusLevel(): RootFocusLevel { return _rootFocusLevel; }
 
 // --- Tokenizer ---
 
@@ -234,11 +258,30 @@ export async function initSemanticEngine(): Promise<void> {
     _verseLookup = new Map(data.verses.map((v) => [v.id, v]));
     _surahLookup = new Map(data.surahs.map((s) => [s.number, s]));
 
+    // --- Wire Service A (Linguistic) ---
+    setVerseTokens(data.verseTokens);
+
+    // --- Wire Service B (Semantic Domains) ---
+    setRootConcepts(data.rootConcepts);
+    setConceptGraphEdges(data.conceptGraphEdges);
+    setConceptNames(data.concepts.map((c) => ({ id: c.id, name: c.name })));
+
     _conceptByVerse = new Map();
     for (const vc of data.verseConcepts) {
       if (!_conceptByVerse.has(vc.verseId)) _conceptByVerse.set(vc.verseId, []);
       _conceptByVerse.get(vc.verseId)!.push(vc);
     }
+
+    // --- Build root → primary concept map (for semantic cluster filtering + radial layout) ---
+    // Takes highest-weight concept per root from ayamakna_root_concepts
+    const rootConceptBest = new Map<string, { conceptId: string; weight: number }>();
+    for (const rc of data.rootConcepts) {
+      const existing = rootConceptBest.get(rc.root);
+      if (!existing || rc.weight > existing.weight) {
+        rootConceptBest.set(rc.root, { conceptId: rc.conceptId, weight: rc.weight });
+      }
+    }
+    _rootConceptMap = new Map([...rootConceptBest.entries()].map(([root, v]) => [root, v.conceptId]));
 
     _dataLoaded = true;
     _tokenizedVerses = null;
@@ -271,7 +314,17 @@ export async function initSemanticEngine(): Promise<void> {
       conceptMap.get(vc.verseId)!.push(vc);
     }
 
-    const cache = runPrecompute(verses, conceptMap, _rootTranslations, undefined, undefined, undefined, data.actionEdges.length > 0 ? data.actionEdges : undefined);
+    const cache = runPrecompute(
+      verses,
+      conceptMap,
+      _rootTranslations,
+      undefined,
+      undefined,
+      undefined,
+      data.actionEdges.length > 0 ? data.actionEdges : undefined,
+      _rootConceptMap,
+      data.rootVerseLinks.length > 0 ? data.rootVerseLinks : undefined
+    );
     _semanticCache = cache;
     _rootIndex = cache.rootIndex;
 
@@ -291,6 +344,105 @@ export function isEngineReady(): boolean {
 }
 
 // --- Search Tokens Builder ---
+
+/** Public: build full search tokens for a verse (used for isolated node overlay). */
+export function getVerseSearchTokens(verseId: string): string[] {
+  const verse = _verseLookup.get(verseId);
+  if (!verse) return [];
+  const tv = _tokenizedVerseMap.get(verseId);
+  return buildSearchTokens(verse, tv);
+}
+
+/**
+ * Mode-specific search tokens for a verse:
+ * - root: root translations/keywords + English/Indonesian translation
+ * - concept: concept names (EN/ID) + translation
+ * - action: actor labels + verb English meanings + semantic cluster labels + translation
+ * - contrast: contrast pair labels (labelA/labelB, e.g. "nur", "kufr", "iman") + translation
+ * - similarity: full tokens (same as root)
+ */
+export function getVerseSearchTokensForMode(verseId: string, mode: SemanticMode): string[] {
+  const verse = _verseLookup.get(verseId);
+  if (!verse) return [];
+  const tv = _tokenizedVerseMap.get(verseId);
+
+  // Base: always include translation tokens
+  const base: string[] = [
+    ...verse.textTranslation.toLowerCase().split(/\s+/).slice(0, 30),
+  ];
+  if (verse.textTranslationId) {
+    base.push(...verse.textTranslationId.toLowerCase().split(/\s+/).slice(0, 30));
+  }
+
+  if (mode === 'root' || mode === 'similarity') {
+    // Root mode: root translations + root keywords + verse body translations (EN + ID).
+    // Use Service A (ayamakna_verse_tokens) as root source — same as VerseDetail badges.
+    const { roots } = getVerseLinguisticRoots(verseId);
+    for (const root of roots) {
+      const kw = ROOT_KEYWORDS[root];
+      if (kw) base.push(...kw.split(' '));
+      const tr = _rootTranslations.get(root);
+      if (tr) base.push(...tr.toLowerCase().split(/\s+/));
+    }
+    return base;
+  }
+
+  if (mode === 'concept') {
+    const vcs = _conceptByVerse.get(verseId) ?? [];
+    for (const vc of vcs) {
+      const concept = _allConcepts.find((c) => c.id === vc.conceptId);
+      if (concept) {
+        base.push(concept.name.toLowerCase(), concept.id.toLowerCase());
+        const indoKw = CONCEPT_INDONESIAN[concept.id];
+        if (indoKw) base.push(...indoKw.split(' '));
+      }
+    }
+    return base;
+  }
+
+  if (mode === 'action') {
+    const cache = getSemanticCache();
+    if (cache) {
+      const actions = cache.actionEdges.filter((a) => a.verseId === verseId);
+      for (const a of actions) {
+        // Actor labels
+        const ACTOR_LABELS: Record<string, string> = {
+          divine: 'allah', human: 'human', believer: 'believer',
+          disbeliever: 'disbeliever', angel: 'angel', nature: 'nature',
+          prophet: 'prophet', hypocrite: 'hypocrite', shaytan: 'shaytan', mankind: 'mankind',
+        };
+        base.push(a.actorType.toLowerCase());
+        const label = ACTOR_LABELS[a.actorType];
+        if (label) base.push(label);
+        if (a.englishMeaning) base.push(...a.englishMeaning.toLowerCase().split(/\s+/));
+        if (a.semanticCluster) base.push(a.semanticCluster.toLowerCase().replace(/_/g, ' '));
+        if (a.targetType) base.push(String(a.targetType).toLowerCase());
+      }
+    }
+    return base;
+  }
+
+  if (mode === 'contrast') {
+    // Include contrast pair labels that this verse participates in
+    const cache = getSemanticCache();
+    if (cache) {
+      const involvedPairIds = new Set(
+        cache.contrastLinks
+          .filter((cl) => cl.verseA === verseId || cl.verseB === verseId)
+          .map((cl) => cl.pairId)
+      );
+      for (const pairId of involvedPairIds) {
+        const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === pairId);
+        if (pair) {
+          base.push(pair.labelA.toLowerCase(), pair.labelB.toLowerCase(), pair.category.toLowerCase());
+        }
+      }
+    }
+    return base;
+  }
+
+  return base;
+}
 
 function buildSearchTokens(verse: Verse, tv: TokenizedVerse | undefined): string[] {
   const tokens: string[] = [];
@@ -348,6 +500,18 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
     linkCounts.set(tgt, (linkCounts.get(tgt) ?? 0) + 1);
   }
 
+  // In root mode: compute per-node sum of shared roots across all root edges
+  const nodeSharedRoots = new Map<string, number>();
+  if (mode === 'root') {
+    for (const e of edges) {
+      const src = typeof e.source === 'string' ? e.source : e.source.id;
+      const tgt = typeof e.target === 'string' ? e.target : e.target.id;
+      const count = e.sharedRootsCount ?? 1;
+      nodeSharedRoots.set(src, (nodeSharedRoots.get(src) ?? 0) + count);
+      nodeSharedRoots.set(tgt, (nodeSharedRoots.get(tgt) ?? 0) + count);
+    }
+  }
+
   const nodes: GraphNode[] = [];
   for (const id of connectedIds) {
     const verse = _verseLookup.get(id);
@@ -357,11 +521,13 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
     const lc = linkCounts.get(id) ?? 0;
     const tv = _tokenizedVerseMap.get(id);
 
-    // Root density heatmap score
+    // Root density heatmap score (kept for compat)
     const heatScore = cache.rootAnalytics?.densityByVerse[id]?.heatScore;
 
-    // Centrality score from dominant root in this verse
+    // In root mode: compute dominant root for frequency coloring + semantic cluster for radial layout
     let centralityScore: number | undefined;
+    let rootVerseFrequency: number | undefined;
+    let semanticCluster: string | undefined;
     if (mode === 'root' && tv && cache.rootAnalytics) {
       const rootCounts = new Map<string, number>();
       for (const w of tv.words) {
@@ -372,6 +538,8 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
         if (count > maxCount) { maxRoot = root; maxCount = count; }
       }
       centralityScore = cache.rootAnalytics.centralityByRoot[maxRoot]?.importance;
+      rootVerseFrequency = cache.rootAnalytics.centralityByRoot[maxRoot]?.verseFrequency;
+      semanticCluster = _rootConceptMap.get(maxRoot); // concept ID for radial positioning
     }
 
     nodes.push({
@@ -382,9 +550,12 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
       ayahNumber: verse.ayahNumber,
       weight: Math.min(1, lc / 10),
       cluster: getPrimaryCluster(verse.id, mode, cache),
-      searchTokens: buildSearchTokens(verse, tv),
+      searchTokens: getVerseSearchTokensForMode(verse.id, mode),
       heatScore,
       centralityScore,
+      sharedRootsCount: nodeSharedRoots.get(id),
+      rootVerseFrequency,
+      semanticCluster,
     });
   }
 
@@ -439,9 +610,38 @@ function getEdgesForMode(mode: SemanticMode, cache: SemanticCache): GraphEdge[] 
   let links: VerseLink[];
 
   switch (mode) {
-    case 'root':
-      links = cache.verseLinks.filter((l) => l.linkType === 'root');
+    case 'root': {
+      // Per-node edge cap: prevents hairball clusters from hub verses.
+      // Top 7 hop=1 (direct) + top 3 hop=2 (multi-hop) edges per node survive.
+      // Union rule: edge lives if it is in the top-N for EITHER endpoint.
+      const ROOT_HOP1_CAP = 7;
+      const ROOT_HOP2_CAP = 3;
+      // Similarity threshold applied BEFORE the cap — drops weakly-similar pairs,
+      // which removes their exclusive nodes from the graph entirely.
+      const minSim = ROOT_FOCUS_THRESHOLDS[_rootFocusLevel];
+      const rootLinks = cache.verseLinks.filter(
+        (l) => l.linkType === 'root' && l.similarityScore >= minSim
+      );
+
+      const hop1ByNode = new Map<string, VerseLink[]>();
+      const hop2ByNode = new Map<string, VerseLink[]>();
+      for (const l of rootLinks) {
+        const bucket = (l.hopCount ?? 1) === 2 ? hop2ByNode : hop1ByNode;
+        for (const nodeId of [l.verseA, l.verseB]) {
+          if (!bucket.has(nodeId)) bucket.set(nodeId, []);
+          bucket.get(nodeId)!.push(l);
+        }
+      }
+      for (const list of hop1ByNode.values()) list.sort((a, b) => b.similarityScore - a.similarityScore);
+      for (const list of hop2ByNode.values()) list.sort((a, b) => b.similarityScore - a.similarityScore);
+
+      const survivingLinks = new Set<VerseLink>();
+      for (const [, list] of hop1ByNode) for (const l of list.slice(0, ROOT_HOP1_CAP)) survivingLinks.add(l);
+      for (const [, list] of hop2ByNode) for (const l of list.slice(0, ROOT_HOP2_CAP)) survivingLinks.add(l);
+
+      links = [...survivingLinks];
       break;
+    }
     case 'concept':
       links = cache.verseLinks.filter((l) => l.linkType === 'concept');
       break;
@@ -463,6 +663,8 @@ function getEdgesForMode(mode: SemanticMode, cache: SemanticCache): GraphEdge[] 
     target: l.verseB,
     linkType: l.linkType,
     strength: l.similarityScore,
+    sharedRootsCount: l.sharedRootsCount,
+    hopCount: l.hopCount,
   }));
 }
 
@@ -563,29 +765,29 @@ export interface VerseRootInsight {
 }
 
 /**
- * Returns precomputed root insights for a verse, sorted by token frequency descending.
- * Uses only cached data — no runtime computation.
+ * Returns root insights for a verse, sorted by token frequency descending.
+ *
+ * STRICT: Root list comes EXCLUSIVELY from Service A (ayamakna_verse_tokens).
+ * The legacy tokenizer (_tokenizedVerseMap) is NOT used here.
+ * Frequency + translation metadata is layered on top as read-only decoration.
  */
 export function getVerseRootsWithData(verseId: string): VerseRootInsight[] {
-  const tv = _tokenizedVerseMap.get(verseId);
-  if (!tv) return [];
+  // SERVICE A — authoritative root list (ayamakna_verse_tokens only)
+  const { roots } = getVerseLinguisticRoots(verseId);
   const cache = getSemanticCache();
   if (!cache) return [];
 
-  const seen = new Set<string>();
   const results: VerseRootInsight[] = [];
 
-  for (const w of tv.words) {
-    if (!w.root || seen.has(w.root)) continue;
-    seen.add(w.root);
-    const entry = cache.rootIndex[w.root];
-    if (!entry) continue;
+  for (const root of roots) {
+    // roots from Service A are already Arabic-validated; skip any that slipped through
+    const entry = cache.rootIndex[root];
     results.push({
-      root: w.root,
-      translation: _rootTranslations.get(w.root) ?? '',
-      tokenFrequency: entry.count,
-      verseFrequency: entry.verseIds.length,
-      centralityScore: cache.rootAnalytics?.centralityByRoot[w.root]?.importance,
+      root,
+      translation: _rootTranslations.get(root) ?? '',
+      tokenFrequency: entry?.count ?? 0,
+      verseFrequency: entry?.verseIds.length ?? 0,
+      centralityScore: cache.rootAnalytics?.centralityByRoot[root]?.importance,
     });
   }
 
@@ -614,4 +816,88 @@ export function getActionsByCluster(verseId: string): Map<string, ActionEdge[]> 
   return new Map(
     [...grouped.entries()].sort((a, b) => b[1].length - a[1].length)
   );
+}
+
+/** Returns all 6236 verses (for isolated verse overlay). */
+export function getAllVerses(): Verse[] {
+  return _allVerses;
+}
+
+/** Returns contrast pairs that involve the given verse, with partner verse IDs. */
+export function getVerseContrastLinks(verseId: string): Array<{
+  pairId: string; partnerVerseId: string; score: number;
+}> {
+  const cache = getSemanticCache();
+  if (!cache) return [];
+  return cache.contrastLinks
+    .filter((cl) => cl.verseA === verseId || cl.verseB === verseId)
+    .map((cl) => ({
+      pairId: cl.pairId,
+      partnerVerseId: cl.verseA === verseId ? cl.verseB : cl.verseA,
+      score: 0.8,
+    }));
+}
+
+/** Returns top-N most similar verses to the given verse. */
+export function getVerseSimilarityLinks(verseId: string, limit: number = 5): Array<{
+  partnerVerseId: string; score: number; breakdown: { rootScore: number; conceptScore: number; verbScore: number };
+}> {
+  const cache = getSemanticCache();
+  if (!cache) return [];
+  return cache.similarityLinks
+    .filter((sl) => sl.verseA === verseId || sl.verseB === verseId)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((sl) => ({
+      partnerVerseId: sl.verseA === verseId ? sl.verseB : sl.verseA,
+      score: sl.score,
+      breakdown: sl.breakdown,
+    }));
+}
+
+/** Returns the set of verse IDs that are connected in the given mode's graph. */
+export function getConnectedVerseIds(mode: SemanticMode): Set<string> {
+  const cache = getSemanticCache();
+  if (!cache) return new Set();
+  const edges = getEdgesForMode(mode, cache);
+  const ids = new Set<string>();
+  for (const e of edges) {
+    ids.add(typeof e.source === 'string' ? e.source : (e.source as GraphNode).id);
+    ids.add(typeof e.target === 'string' ? e.target : (e.target as GraphNode).id);
+  }
+  return ids;
+}
+
+// =============================================================================
+// Two-Layer Root Intelligence API
+// =============================================================================
+
+/**
+ * SERVICE A — returns roots physically present in the verse.
+ * Ground truth. Reads ONLY from ayamakna_verse_tokens.
+ */
+export function getVerseLinguisticRootsFromStore(verseId: string): string[] {
+  return getVerseLinguisticRoots(verseId).roots;
+}
+
+/**
+ * SERVICE B — returns semantic domains inferred from the verse's roots.
+ * Every domain includes a full, validated trace.
+ * Rejects domains whose from_root is not in Service A's root list.
+ *
+ * In development, violations are logged to the console.
+ */
+export function getVerseSemanticDomains(verseId: string, limit: number = 5) {
+  const linguisticRoots = getVerseLinguisticRoots(verseId).roots;
+  const domains = _getVerseSemanticDomains(linguisticRoots, limit);
+
+  // Development validation — logs any cross-leakage violations
+  if (process.env.NODE_ENV !== 'production') {
+    const violations = validateDomains(domains, linguisticRoots);
+    if (violations.length > 0) {
+      console.warn(`[SemanticDomainService] Validation violations for ${verseId}:`, violations);
+    }
+  }
+
+  return domains;
 }

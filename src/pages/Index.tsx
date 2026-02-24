@@ -1,6 +1,6 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, BookOpen, GitBranch, Layers, Swords, Scale, Brain, Loader2 } from 'lucide-react';
+import { Search, BookOpen, GitBranch, Layers, Swords, Scale, Brain, Loader2, Eye, EyeOff } from 'lucide-react';
 import SemanticGraph from '@/components/graph/SemanticGraph';
 import ParticleBackground from '@/components/graph/ParticleBackground';
 import VerseDetail from '@/components/reader/VerseDetail';
@@ -17,7 +17,68 @@ import {
   getStats,
   getSurahList,
   getVerseRootsWithData,
+  getAllVerses,
+  getConnectedVerseIds,
+  getVerseSearchTokensForMode,
+  getVerseContrastLinks,
+  getVerseSimilarityLinks,
+  setRootFocusLevel,
 } from '@/store/semanticStore';
+import type { RootFocusLevel } from '@/store/semanticStore';
+
+// --- Root translation words to cycle through in the search placeholder ---
+const ROOT_PLACEHOLDER_WORDS = [
+  'Forgiveness', 'Mercy', 'Knowledge', 'Guidance', 'Patience',
+  'Gratitude', 'Creation', 'Worship', 'Truth', 'Justice',
+  'Wisdom', 'Faith', 'Repentance', 'Prayer', 'Light',
+  'Fear', 'Hope', 'Strength', 'Trust', 'Resurrection',
+];
+
+/**
+ * Animated typing placeholder. Cycles through words at ~10s per word.
+ * Returns:
+ *   display  — the formatted string to show in the placeholder
+ *   currentWord — the fully-typed current word (non-empty only during the pause phase)
+ *                 Used to auto-highlight matching graph nodes when no search query is active.
+ */
+function useTypingPlaceholder(words: string[], typingMs = 80, deletingMs = 45, pauseMs = 9000) {
+  const [wordIdx, setWordIdx] = useState(0);
+  const [charIdx, setCharIdx] = useState(0);
+  const [phase, setPhase] = useState<'typing' | 'paused' | 'deleting'>('typing');
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const word = words[wordIdx];
+    if (timerRef.current) clearTimeout(timerRef.current);
+
+    if (phase === 'typing') {
+      if (charIdx < word.length) {
+        timerRef.current = setTimeout(() => setCharIdx((c) => c + 1), typingMs);
+      } else {
+        // Word fully typed — pause for pauseMs before deleting
+        timerRef.current = setTimeout(() => setPhase('paused'), pauseMs);
+      }
+    } else if (phase === 'paused') {
+      setPhase('deleting');
+    } else {
+      if (charIdx > 0) {
+        timerRef.current = setTimeout(() => setCharIdx((c) => c - 1), deletingMs);
+      } else {
+        setWordIdx((i) => (i + 1) % words.length);
+        setPhase('typing');
+      }
+    }
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [wordIdx, charIdx, phase, words, typingMs, deletingMs, pauseMs]);
+
+  const word = words[wordIdx].slice(0, charIdx);
+  // currentWord is populated only when the word is fully typed (during the pause phase)
+  const isFullyTyped = charIdx === words[wordIdx].length && phase !== 'deleting';
+  return {
+    display: word ? `Try "${word}"` : 'Search root translations…',
+    currentWord: isFullyTyped ? word : '',
+  };
+}
 
 const MODE_CONFIG: Array<{
   mode: SemanticMode;
@@ -35,10 +96,18 @@ const MODE_CONFIG: Array<{
 const Index = () => {
   const [semanticMode, setSemanticMode] = useState<SemanticMode>('root');
   const [searchQuery, setSearchQuery] = useState('');
+  const { display: typingPlaceholder, currentWord: placeholderWord } = useTypingPlaceholder(ROOT_PLACEHOLDER_WORDS);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [engineReady, setEngineReady] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Loading Quranic data...');
+  const [showIsolated, setShowIsolated] = useState(false);
+  const [rootFocusLevel, setRootFocusLevelState] = useState<RootFocusLevel>('focused');
+
+  const handleFocusLevel = useCallback((level: RootFocusLevel) => {
+    setRootFocusLevel(level);      // update store module variable
+    setRootFocusLevelState(level); // trigger re-render + graphData recompute
+  }, []);
 
   // Initialize engine on mount
   useEffect(() => {
@@ -62,22 +131,69 @@ const Index = () => {
 
   const graphData = useMemo(
     () => (engineReady ? buildGraphData(semanticMode) : { nodes: [], edges: [] }),
-    [semanticMode, engineReady]
+    [semanticMode, engineReady, rootFocusLevel]
   );
   const stats = useMemo(
     () => (engineReady ? getStats() : { verses: 0, roots: 0, concepts: 0, links: 0 }),
     [engineReady]
   );
 
-  // Root insights for selected verse
+  // Auto-highlight: when no search query is active in root mode, highlight nodes matching
+  // the current fully-typed placeholder word. This creates a 10s animated highlight tour.
+  const effectiveSearchQuery = useMemo(() => {
+    if (searchQuery) return searchQuery;
+    // Pause auto-highlight when a node is selected so it doesn't interfere with focus
+    if (semanticMode === 'root' && placeholderWord && !selectedNode) return placeholderWord.toLowerCase();
+    return '';
+  }, [searchQuery, semanticMode, placeholderWord, selectedNode]);
+
+  // Isolated verses: all verses not in current mode's connected set
+  const isolatedNodes = useMemo((): GraphNode[] => {
+    if (!engineReady || !showIsolated) return [];
+    const connectedIds = getConnectedVerseIds(semanticMode);
+    const surahList = getSurahList();
+    const surahMap = new Map(surahList.map((s) => [s.number, s.name]));
+    return getAllVerses()
+      .filter((v) => !connectedIds.has(v.id))
+      .map((v) => ({
+        id: v.id,
+        label: `${surahMap.get(v.surahId) ?? v.surahId}:${v.ayahNumber}`,
+        labelAr: v.textArabic.slice(0, 40) + (v.textArabic.length > 40 ? '...' : ''),
+        surahId: v.surahId,
+        ayahNumber: v.ayahNumber,
+        weight: 0,
+        cluster: 'unknown',
+        searchTokens: getVerseSearchTokensForMode(v.id, semanticMode),
+      }));
+  }, [engineReady, showIsolated, semanticMode]);
+
+  // Coverage: connected verses / total verses
+  const coverage = useMemo(() => {
+    if (!engineReady || stats.verses === 0) return null;
+    const connected = graphData.nodes.length;
+    return { connected, total: stats.verses, pct: Math.round((connected / stats.verses) * 100) };
+  }, [engineReady, graphData.nodes.length, stats.verses]);
+
+  // Root insights for selected verse (Service A — Linguistic Roots)
   const selectedVerseRoots = useMemo(
     () => (selectedNode ? getVerseRootsWithData(selectedNode.id) : []),
     [selectedNode]
   );
 
+
   // Action summary for selected verse
   const selectedActionSummary = useMemo(
     () => (selectedNode ? getVerseActionSummary(selectedNode.id) : null),
+    [selectedNode]
+  );
+
+  // Contrast & similarity links for selected verse
+  const selectedContrastLinks = useMemo(
+    () => (selectedNode ? getVerseContrastLinks(selectedNode.id) : []),
+    [selectedNode]
+  );
+  const selectedSimilarityLinks = useMemo(
+    () => (selectedNode ? getVerseSimilarityLinks(selectedNode.id) : []),
     [selectedNode]
   );
 
@@ -131,11 +247,12 @@ const Index = () => {
           {/* Semantic Graph */}
           <SemanticGraph
             data={graphData}
-            searchQuery={searchQuery}
+            searchQuery={effectiveSearchQuery}
             onNodeClick={handleNodeClick}
             onBackgroundClick={handleBackgroundClick}
             selectedNodeId={selectedNode?.id ?? null}
             mode={semanticMode}
+            isolatedNodes={isolatedNodes}
           />
 
           {/* Top Bar */}
@@ -162,7 +279,7 @@ const Index = () => {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Search by patience, knowledge, sabar, ilmu..."
+                placeholder={semanticMode === 'root' ? typingPlaceholder : 'Search verses…'}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full glass-panel pl-10 pr-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 transition-all"
@@ -187,6 +304,40 @@ const Index = () => {
                 </button>
               ))}
             </div>
+
+            {/* Isolated Verses Toggle */}
+            <button
+              onClick={() => setShowIsolated((v) => !v)}
+              className={`glass-panel flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                showIsolated
+                  ? 'bg-slate-400/15 text-slate-300 border border-slate-400/30'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+              }`}
+              title="Show isolated verses (not yet semantically mapped)"
+            >
+              {showIsolated ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+              <span className="hidden lg:inline">Isolated</span>
+            </button>
+
+            {/* Root Focus Level — root mode only */}
+            {semanticMode === 'root' && (
+              <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many verse connections to show">
+                {(['broad', 'focused', 'deep'] as RootFocusLevel[]).map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => handleFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                      rootFocusLevel === level
+                        ? 'bg-primary/20 text-primary border border-primary/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+                    }`}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            )}
+
           </motion.div>
 
           {/* Bottom Info Bar */}
@@ -197,7 +348,7 @@ const Index = () => {
             className="fixed bottom-4 left-4 right-4 flex items-center justify-between"
             style={{ zIndex: 30 }}
           >
-            <div className="glass-panel px-4 py-2 text-xs text-muted-foreground flex gap-3">
+            <div className="glass-panel px-4 py-2 text-xs text-muted-foreground flex gap-3 items-center">
               <span>
                 <span className="text-primary font-semibold">{stats.verses}</span> verses
               </span>
@@ -210,6 +361,25 @@ const Index = () => {
               <span>
                 <span className="text-primary font-semibold">{graphData.edges.length}</span> links
               </span>
+              {coverage && (
+                <>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span title={`${coverage.connected} of ${coverage.total} verses connected in ${semanticMode} mode`}>
+                    <span
+                      className={`font-semibold ${
+                        coverage.pct >= 70
+                          ? 'text-emerald-400'
+                          : coverage.pct >= 40
+                          ? 'text-yellow-400'
+                          : 'text-red-400'
+                      }`}
+                    >
+                      {coverage.pct}%
+                    </span>{' '}
+                    coverage
+                  </span>
+                </>
+              )}
             </div>
 
             {selectedNode && selectedVerse && (
@@ -252,6 +422,9 @@ const Index = () => {
             actionSummary={selectedActionSummary}
             mode={semanticMode}
             verseRoots={selectedVerseRoots}
+            searchQuery={searchQuery}
+            contrastLinks={selectedContrastLinks}
+            similarityLinks={selectedSimilarityLinks}
           />
         </>
       </AnimatePresence>

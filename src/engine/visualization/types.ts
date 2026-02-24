@@ -14,9 +14,12 @@ export interface GraphNode {
   cluster?: string; // root or concept cluster ID
 
   // Enhanced search & root mode features
-  searchTokens?: string[];    // lowercased: translation words, concept names, root keywords, Indonesian
-  heatScore?: number;         // 0-1 root density score (for heatmap coloring in root mode)
-  centralityScore?: number;   // 0-1 composite importance (for centrality-based sizing in root mode)
+  searchTokens?: string[];       // lowercased: translation words, concept names, root keywords, Indonesian
+  heatScore?: number;            // 0-1 root density score (legacy, kept for compat)
+  centralityScore?: number;      // 0-1 composite importance (legacy)
+  sharedRootsCount?: number;     // sum of sharedRootsCount across all root edges touching this node
+  rootVerseFrequency?: number;   // verse frequency of dominant root (for frequency-based coloring in root mode)
+  semanticCluster?: string;      // concept-based cluster ID (for radial layout in root mode)
 
   // D3 simulation positions
   x?: number;
@@ -32,6 +35,8 @@ export interface GraphEdge {
   target: string | GraphNode;
   linkType: LinkType;
   strength: number; // 0-1
+  sharedRootsCount?: number; // number of shared semantic roots (root links only, for edge thickness)
+  hopCount?: number;         // 1=direct root share, 2=multi-hop via concept neighbor
 }
 
 export interface GraphRenderData {

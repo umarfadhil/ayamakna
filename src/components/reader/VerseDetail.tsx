@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Layers, Swords, Dna, ChevronDown, ChevronRight, GitFork, List } from 'lucide-react';
+import { X, Layers, Swords, Dna, ChevronDown, ChevronRight, GitFork, List, Scale, Brain } from 'lucide-react';
 import type { Verse } from '@/engine/linguistic/types';
 import type { ActionEdge, ActionSummary, SemanticMode } from '@/engine/semantic/types';
 import type { Concept } from '@/engine/semantic/types';
@@ -8,6 +8,20 @@ import type { SemanticCluster } from '@/engine/semantic/actionDictionaries';
 import { SEMANTIC_CLUSTER_LABELS } from '@/engine/semantic/actionDictionaries';
 import { computeActionSummary } from '@/engine/semantic/actionEngine';
 import type { VerseRootInsight } from '@/store/semanticStore';
+import { getVerseById, getSurahList } from '@/store/semanticStore';
+import { CONTRAST_DICTIONARY } from '@/engine/semantic/contrastEngine';
+
+interface ContrastLinkData {
+  pairId: string;
+  partnerVerseId: string;
+  score: number;
+}
+
+interface SimilarityLinkData {
+  partnerVerseId: string;
+  score: number;
+  breakdown: { rootScore: number; conceptScore: number; verbScore: number };
+}
 
 interface VerseDetailProps {
   isOpen: boolean;
@@ -19,6 +33,9 @@ interface VerseDetailProps {
   actionSummary?: ActionSummary | null;
   mode: SemanticMode;
   verseRoots?: VerseRootInsight[];
+  searchQuery?: string;
+  contrastLinks?: ContrastLinkData[];
+  similarityLinks?: SimilarityLinkData[];
 }
 
 // --- Labels ---
@@ -74,15 +91,24 @@ function getRootBadgeClass(verseFrequency: number): string {
   return 'border-orange-400/45 bg-orange-400/15 text-orange-300';
 }
 
-const RootBadge: React.FC<{ insight: VerseRootInsight }> = ({ insight }) => {
+const RootBadge: React.FC<{ insight: VerseRootInsight; searchQuery?: string }> = ({ insight, searchQuery }) => {
   const [showTip, setShowTip] = useState(false);
   const label = insight.translation || insight.root;
   const badgeClass = getRootBadgeClass(insight.verseFrequency);
 
+  // Highlight if searchQuery matches label, root, or any keyword
+  const q = searchQuery?.toLowerCase() ?? '';
+  const isMatch = q.length > 0 && (
+    label.toLowerCase().includes(q) ||
+    insight.root.toLowerCase().includes(q)
+  );
+
   return (
     <span className="relative inline-block">
       <span
-        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border cursor-default select-none ${badgeClass}`}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border cursor-default select-none transition-all ${badgeClass} ${
+          isMatch ? 'ring-2 ring-yellow-400/70 bg-yellow-400/15 scale-105' : ''
+        }`}
         onMouseEnter={() => setShowTip(true)}
         onMouseLeave={() => setShowTip(false)}
       >
@@ -320,10 +346,22 @@ const ActionFlowGraph: React.FC<{ actions: ActionEdge[] }> = ({ actions }) => {
 
 // --- Expandable Action Row ---
 
-const ActionRow: React.FC<{ action: ActionEdge; verse?: Verse }> = ({ action, verse }) => {
+const ActionRow: React.FC<{ action: ActionEdge; verse?: Verse; searchQuery?: string }> = ({ action, verse, searchQuery }) => {
   const [expanded, setExpanded] = useState(false);
   const pStyle = POLARITY_STYLES[action.polarity] ?? POLARITY_STYLES.neutral;
   const actorColor = ACTOR_COLORS[action.actorType] ?? ACTOR_COLORS.human;
+
+  // Highlight actor if search matches actor label, type key, or English meaning
+  const q = searchQuery?.toLowerCase() ?? '';
+  const actorLabel = ACTOR_LABELS[action.actorType] ?? action.actorType;
+  const isActorMatch = q.length > 0 && (
+    actorLabel.toLowerCase().includes(q) ||
+    action.actorType.toLowerCase().includes(q)
+  );
+  const isVerbMatch = q.length > 0 && (
+    (action.englishMeaning?.toLowerCase().includes(q) ?? false) ||
+    action.actionRoot.includes(q)
+  );
 
   return (
     <div className={`rounded-lg border ${pStyle.border} ${pStyle.bg} overflow-hidden`}>
@@ -335,17 +373,21 @@ const ActionRow: React.FC<{ action: ActionEdge; verse?: Verse }> = ({ action, ve
         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${pStyle.dot}`} />
 
         {/* Actor badge */}
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${actorColor}`}>
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-all ${actorColor} ${
+          isActorMatch ? 'ring-2 ring-white/40 scale-110' : ''
+        }`}>
           {ACTOR_LABELS[action.actorType] ?? action.actorType}
         </span>
 
         <span className="text-muted-foreground/60">→</span>
 
         {/* Verb: Arabic + English */}
-        <span className="flex items-center gap-1 min-w-0">
+        <span className={`flex items-center gap-1 min-w-0 ${isVerbMatch ? 'text-yellow-300' : ''}`}>
           <span className="font-arabic text-foreground/90 text-[13px]">{action.verbText || action.actionRoot}</span>
           {action.englishMeaning && (
-            <span className="text-muted-foreground/70 truncate">({action.englishMeaning})</span>
+            <span className={`truncate ${isVerbMatch ? 'text-yellow-300/80' : 'text-muted-foreground/70'}`}>
+              ({action.englishMeaning})
+            </span>
           )}
         </span>
 
@@ -414,7 +456,8 @@ const ClusterSection: React.FC<{
   actions: ActionEdge[];
   verse?: Verse;
   defaultOpen?: boolean;
-}> = ({ clusterKey, actions, verse, defaultOpen = false }) => {
+  searchQuery?: string;
+}> = ({ clusterKey, actions, verse, defaultOpen = false, searchQuery }) => {
   const [open, setOpen] = useState(defaultOpen);
   const label = clusterKey === 'uncategorized'
     ? 'Other Actions'
@@ -433,7 +476,7 @@ const ClusterSection: React.FC<{
       {open && (
         <div className="px-2 pb-2 space-y-1.5">
           {actions.map((a) => (
-            <ActionRow key={a.id} action={a} verse={verse} />
+            <ActionRow key={a.id} action={a} verse={verse} searchQuery={searchQuery} />
           ))}
         </div>
       )}
@@ -453,7 +496,12 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
   actionSummary,
   mode,
   verseRoots,
+  searchQuery,
+  contrastLinks = [],
+  similarityLinks = [],
 }) => {
+  const surahList = useMemo(() => getSurahList(), []);
+  const surahMap = useMemo(() => new Map(surahList.map((s) => [s.number, s.name])), [surahList]);
   const [actionViewMode, setActionViewMode] = useState<'list' | 'flow'>('list');
 
   // Group actions by semantic cluster
@@ -550,7 +598,7 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
                 </h3>
                 <div className="flex flex-wrap gap-1.5">
                   {verseRoots.map((insight) => (
-                    <RootBadge key={insight.root} insight={insight} />
+                    <RootBadge key={insight.root} insight={insight} searchQuery={searchQuery} />
                   ))}
                 </div>
                 <p className="text-[9px] text-muted-foreground/40 mt-2">
@@ -559,29 +607,39 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
               </div>
             )}
 
-            {/* Concepts */}
+            {/* Concepts Intelligence */}
             {concepts.length > 0 && (
               <div>
                 <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <Layers className="w-3.5 h-3.5 text-blue-400" />
-                  Concepts
+                  Concepts Intelligence
                 </h3>
                 <div className="flex flex-wrap gap-2">
-                  {concepts.map(({ concept, weight }) => (
-                    <span
-                      key={concept.id}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-blue-400/20 bg-blue-400/10 text-blue-300"
-                      title={concept.description}
-                    >
-                      {concept.nameAr && (
-                        <span className="font-arabic text-[11px]">{concept.nameAr}</span>
-                      )}
-                      <span>{concept.name}</span>
-                      <span className="text-blue-400/50 text-[10px]">
-                        {Math.round(weight * 100)}%
+                  {concepts.map(({ concept, weight }) => {
+                    const q = searchQuery?.toLowerCase() ?? '';
+                    const isConceptMatch = q.length > 0 && (
+                      concept.name.toLowerCase().includes(q) ||
+                      concept.id.toLowerCase().includes(q) ||
+                      (concept.nameAr?.includes(searchQuery ?? '') ?? false)
+                    );
+                    return (
+                      <span
+                        key={concept.id}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-blue-400/20 bg-blue-400/10 text-blue-300 transition-all ${
+                          isConceptMatch ? 'ring-2 ring-blue-400/70 bg-blue-400/20 scale-105' : ''
+                        }`}
+                        title={concept.description}
+                      >
+                        {concept.nameAr && (
+                          <span className="font-arabic text-[11px]">{concept.nameAr}</span>
+                        )}
+                        <span>{concept.name}</span>
+                        <span className="text-blue-400/50 text-[10px]">
+                          {Math.round(weight * 100)}%
+                        </span>
                       </span>
-                    </span>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -629,12 +687,13 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
                           actions={clusterActions}
                           verse={verse}
                           defaultOpen={i === 0}
+                          searchQuery={searchQuery}
                         />
                       ))
                     ) : (
                       // Flat list (single or no cluster)
                       actions.map((action) => (
-                        <ActionRow key={action.id} action={action} verse={verse} />
+                        <ActionRow key={action.id} action={action} verse={verse} searchQuery={searchQuery} />
                       ))
                     )}
                   </div>
@@ -646,6 +705,101 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
                     <ActionFlowGraph actions={actions} />
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Contrast Intelligence */}
+            {contrastLinks.length > 0 && (
+              <div>
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <Scale className="w-3.5 h-3.5 text-red-400" />
+                  Contrast Intelligence
+                  <span className="text-muted-foreground/40 text-[10px] normal-case ml-1">{contrastLinks.length} links</span>
+                </h3>
+                <div className="space-y-1.5">
+                  {contrastLinks.slice(0, 5).map((cl) => {
+                    const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === cl.pairId);
+                    const partner = getVerseById(cl.partnerVerseId);
+                    const partnerSurah = partner ? (surahMap.get(partner.surahId) ?? partner.surahId) : '';
+                    return (
+                      <div
+                        key={`${cl.pairId}-${cl.partnerVerseId}`}
+                        className="flex items-start gap-2 px-2.5 py-1.5 rounded-lg border border-red-400/15 bg-red-400/5 text-xs"
+                      >
+                        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                          {pair && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-arabic text-red-300/90 text-[11px]">{pair.labelA}</span>
+                              <span className="text-muted-foreground/50">↔</span>
+                              <span className="font-arabic text-red-300/90 text-[11px]">{pair.labelB}</span>
+                              <span className="text-[9px] text-muted-foreground/50 uppercase ml-1">{pair.category}</span>
+                            </div>
+                          )}
+                          <div className="text-muted-foreground/60 text-[10px]">
+                            ↳ {partnerSurah}:{partner?.ayahNumber}
+                          </div>
+                          {partner && (
+                            <div className="text-muted-foreground/50 text-[10px] truncate">
+                              {partner.textTranslation.slice(0, 60)}…
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-red-400/50 text-[9px] flex-shrink-0 mt-0.5">
+                          {Math.round(cl.score * 100)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {contrastLinks.length > 5 && (
+                    <p className="text-[9px] text-muted-foreground/40 pl-1">
+                      +{contrastLinks.length - 5} more contrast links
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Similarity Intelligence */}
+            {similarityLinks.length > 0 && (
+              <div>
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <Brain className="w-3.5 h-3.5 text-purple-400" />
+                  Similarity Intelligence
+                  <span className="text-muted-foreground/40 text-[10px] normal-case ml-1">top {similarityLinks.length}</span>
+                </h3>
+                <div className="space-y-1.5">
+                  {similarityLinks.map((sl) => {
+                    const partner = getVerseById(sl.partnerVerseId);
+                    const partnerSurah = partner ? (surahMap.get(partner.surahId) ?? partner.surahId) : '';
+                    return (
+                      <div
+                        key={sl.partnerVerseId}
+                        className="px-2.5 py-1.5 rounded-lg border border-purple-400/15 bg-purple-400/5 text-xs space-y-1"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-purple-300/80 font-medium">
+                            {partnerSurah}:{partner?.ayahNumber}
+                          </span>
+                          <span className="text-purple-400/60 text-[9px]">
+                            {Math.round(sl.score * 100)}% match
+                          </span>
+                        </div>
+                        {partner && (
+                          <p className="text-muted-foreground/60 text-[10px] leading-relaxed truncate">
+                            {partner.textTranslation.slice(0, 70)}…
+                          </p>
+                        )}
+                        <div className="flex gap-2 text-[9px] text-muted-foreground/40">
+                          <span>Root {Math.round(sl.breakdown.rootScore * 100)}%</span>
+                          <span>·</span>
+                          <span>Concept {Math.round(sl.breakdown.conceptScore * 100)}%</span>
+                          <span>·</span>
+                          <span>Verb {Math.round(sl.breakdown.verbScore * 100)}%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

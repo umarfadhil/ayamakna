@@ -31,7 +31,13 @@
       "Bash(\"c:\\\\Users\\\\Umar Fadhil:*)",
       "mcp__supabase__execute_sql",
       "Bash(node scripts/gen-sql.mjs:*)",
-      "Bash(node scripts/seed-id-translation.mjs:*)"
+      "Bash(node scripts/seed-id-translation.mjs:*)",
+      "mcp__supabase__list_tables",
+      "Bash(node scripts/seed-linguistic-data.mjs:*)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "supabase"
+  ]
 }

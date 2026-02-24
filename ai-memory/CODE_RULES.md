@@ -45,6 +45,34 @@
 - Enriched ActionEdge fields (`verbText`, `englishMeaning`, `rootFrequency`, `semanticCluster`, `polarity`) are populated at precompute time, not at render time.
 - `computeActionSummary()` is a pure function that works at any aggregation level (verse, concept, global).
 
+## Two-Layer Root Intelligence
+- **Service A (Linguistic)** MUST only read from `ayamakna_verse_tokens` data. No concept/graph access. Returns `{ roots: string[] }`. File: `src/services/linguistic/linguisticService.ts`.
+- **Service B (Semantic)** takes root list from Service A as input. Reads `ayamakna_root_concepts` + `ayamakna_concept_graph_edges`. File: `src/services/semantic/semanticDomainService.ts`.
+- Every `SemanticDomain` MUST have a complete `trace: { from_root, via_concept, relation_strength }`. Domains missing trace fields are rejected before return.
+- `from_root` in trace MUST be in the Service A root list — validated by `isTraceValid()`.
+- Graph traversal in Service B is depth=1 ONLY (root→concept→neighbor). Never traverse deeper.
+- No cross-leakage: Service A never imports from Service B or concept/semantic engine files. Service B never reads verse text directly.
+- `validateDomains()` should be called in dev mode to catch violations.
+- Service B output (SemanticDomainCard / AI-inferred domains) is NOT displayed in VerseDetail — it was removed. Service A roots are the sole root display.
+
+## Search
+- `getVerseSearchTokensForMode(verseId, mode)` builds mode-specific tokens for graph node highlighting.
+- Root/similarity mode: root translations + root keywords (Service A roots) + verse EN + verse ID translations.
+- Root source MUST be `getVerseLinguisticRoots(verseId)` (Service A), NOT `_tokenizedVerseMap`, to stay consistent with VerseDetail badge display.
+- `isHighlighted(node)` in SemanticGraph splits the query on spaces and uses AND logic — all words must match.
+- Animated typing placeholder in root mode (`useTypingPlaceholder`) cycles through `ROOT_PLACEHOLDER_WORDS` with pauseMs=9000 (~10s per word); returns `{display, currentWord}` — `currentWord` is non-empty only during the pause phase.
+- `effectiveSearchQuery` in Index.tsx = `placeholderWord.toLowerCase()` when no user search is active in root mode; passed to SemanticGraph as `searchQuery` to auto-highlight matching nodes.
+- **Search edges**: when `searchQuery` is active AND `isolatedNodes.length > 0`, SemanticGraph auto-generates dashed cyan edges between matched isolated nodes and their K=5 nearest matched neighbors. Edges are purely visual (not in D3 sim), fade in on query change, recompute positions every 60 frames. Matched isolated nodes that are edge endpoints render with cyan tint + radius 4.5.
+
+## Root Mode Graph Morphology
+- Root verse connections require: shared root AND that root maps to a semantic cluster in `ayamakna_root_concepts` (via `_rootConceptMap`). Unmapped roots are skipped.
+- Root links are precomputed and stored in `ayamakna_root_verse_links`; fetched at startup and passed to `runPrecompute()` as `preloadedRootLinks` (skips client-side `autoLinkByRoot()`).
+- Node size in root mode: `4 + min(sharedRootsCount / 40, 1) × 20` (sum of sharedRootsCount across all root edges touching the node).
+- Node color in root mode: `getRootFrequencyColor(rootVerseFrequency)` — grey (≥500 verses, common root), light gold (≥150), gold/amber (≥40), brown (<40, rare root).
+- Edge thickness in root mode: `0.5 + min(sharedRootsCount, 12) × 0.35`.
+- Edge spring: distance = `max(35, 200 × (1 − strength × 0.85))` in root mode (high similarity → nodes closer).
+- Radial cluster layout: custom alpha-based D3 force pulls each node toward its `semanticCluster` angular position (RADIAL_RADIUS=320, strength=0.035×alpha). Only active in root mode.
+
 ## General
 - Avoid magic values; use constants and enums.
 - Keep business logic in engine and store files, UI logic in components.
