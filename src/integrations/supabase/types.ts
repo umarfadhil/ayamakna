@@ -64,6 +64,84 @@ export type Database = {
           },
         ]
       }
+      ayamakna_action_families: {
+        Row: {
+          color_hue: number
+          display_order: number
+          id: string
+          name: string
+          name_id: string | null
+        }
+        Insert: {
+          color_hue: number
+          display_order: number
+          id: string
+          name: string
+          name_id?: string | null
+        }
+        Update: {
+          color_hue?: number
+          display_order?: number
+          id?: string
+          name?: string
+          name_id?: string | null
+        }
+        Relationships: []
+      }
+      ayamakna_action_verse_links: {
+        Row: {
+          id: number
+          primary_action_family: string | null
+          shared_actions_count: number
+          similarity_score: number
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Insert: {
+          id?: number
+          primary_action_family?: string | null
+          shared_actions_count?: number
+          similarity_score: number
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Update: {
+          id?: number
+          primary_action_family?: string | null
+          shared_actions_count?: number
+          similarity_score?: number
+          verse_a_id?: string
+          verse_b_id?: string
+        }
+        Relationships: []
+      }
+      ayamakna_concept_domains: {
+        Row: {
+          color_hue: number
+          description: string | null
+          display_order: number
+          id: string
+          name: string
+          name_id: string | null
+        }
+        Insert: {
+          color_hue?: number
+          description?: string | null
+          display_order?: number
+          id: string
+          name: string
+          name_id?: string | null
+        }
+        Update: {
+          color_hue?: number
+          description?: string | null
+          display_order?: number
+          id?: string
+          name?: string
+          name_id?: string | null
+        }
+        Relationships: []
+      }
       ayamakna_concept_graph_edges: {
         Row: {
           concept_a: string
@@ -100,24 +178,95 @@ export type Database = {
           },
         ]
       }
+      ayamakna_concept_verse_links: {
+        Row: {
+          domain_id: string | null
+          id: number
+          primary_concept_id: string | null
+          shared_concepts_count: number
+          similarity_score: number
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Insert: {
+          domain_id?: string | null
+          id?: number
+          primary_concept_id?: string | null
+          shared_concepts_count?: number
+          similarity_score?: number
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Update: {
+          domain_id?: string | null
+          id?: number
+          primary_concept_id?: string | null
+          shared_concepts_count?: number
+          similarity_score?: number
+          verse_a_id?: string
+          verse_b_id?: string
+        }
+        Relationships: []
+      }
       ayamakna_concepts: {
         Row: {
           description: string
+          domain_id: string | null
+          domain_order: number | null
           id: string
           name: string
           name_ar: string | null
         }
         Insert: {
           description: string
+          domain_id?: string | null
+          domain_order?: number | null
           id: string
           name: string
           name_ar?: string | null
         }
         Update: {
           description?: string
+          domain_id?: string | null
+          domain_order?: number | null
           id?: string
           name?: string
           name_ar?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ayamakna_concepts_domain_id_fkey"
+            columns: ["domain_id"]
+            isOneToOne: false
+            referencedRelation: "ayamakna_concept_domains"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ayamakna_contrast_verse_links: {
+        Row: {
+          category: string
+          contrast_strength: number
+          id: number
+          pair_id: string
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Insert: {
+          category: string
+          contrast_strength?: number
+          id?: number
+          pair_id: string
+          verse_a_id: string
+          verse_b_id: string
+        }
+        Update: {
+          category?: string
+          contrast_strength?: number
+          id?: number
+          pair_id?: string
+          verse_a_id?: string
+          verse_b_id?: string
         }
         Relationships: []
       }
