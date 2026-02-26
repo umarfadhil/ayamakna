@@ -60,7 +60,7 @@ const MobileControlsFab: React.FC<MobileControlsFabProps> = ({
   const ActiveIcon = MODE_ICONS[semanticMode];
 
   return (
-    <div className="fixed bottom-20 right-4 md:hidden" style={{ zIndex: 40 }}>
+    <div className="fixed bottom-4 right-4 md:hidden flex flex-col items-end" style={{ zIndex: 40 }}>
       <AnimatePresence>
         {open && (
           <motion.div
