@@ -64,6 +64,16 @@
 - `effectiveSearchQuery` in Index.tsx = `placeholderWord.toLowerCase()` when no user search is active in root mode; passed to SemanticGraph as `searchQuery` to auto-highlight matching nodes.
 - **Search edges**: when `searchQuery` is active AND `isolatedNodes.length > 0`, SemanticGraph auto-generates dashed cyan edges between matched isolated nodes and their K=5 nearest matched neighbors. Edges are purely visual (not in D3 sim), fade in on query change, recompute positions every 60 frames. Matched isolated nodes that are edge endpoints render with cyan tint + radius 4.5.
 
+## Concept Mode Graph Morphology (Two-Level Hierarchy)
+- Concept mode uses TWO-LEVEL structure: Verse → Concept → Domain. Domain is the visual cluster unit.
+- Node color = `hsla(domain_hue, sat, lightness, 0.9)` where lightness = `35% + (domain_order-1)*8%`. Darker = more central concept within domain.
+- `getPrimaryCluster()` in concept mode MUST return `domain_id` (not `conceptId`) for radial layout to work.
+- Concept links are precomputed as `ayamakna_concept_verse_links` (pure concept Jaccard). Do NOT reuse `similarityLinks` for concept mode.
+- `_conceptFocusLevel` controls minimum similarity threshold: `broad=0.15`, `focused=0.30`, `deep=0.48`.
+- `ConceptDomain` interface: `{ id, name, nameId, description, colorHue, displayOrder }`.
+- `ayamakna_concepts` table has `domain_id` + `domain_order` columns (FK to domains table).
+- Radial cluster force: concept mode uses same pattern as root mode — nodes pulled toward domain's angular position on ring (RADIAL_RADIUS=320).
+
 ## Root Mode Graph Morphology
 - Root verse connections require: shared root AND that root maps to a semantic cluster in `ayamakna_root_concepts` (via `_rootConceptMap`). Unmapped roots are skipped.
 - Root links are precomputed and stored in `ayamakna_root_verse_links`; fetched at startup and passed to `runPrecompute()` as `preloadedRootLinks` (skips client-side `autoLinkByRoot()`).

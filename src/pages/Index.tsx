@@ -22,9 +22,15 @@ import {
   getVerseSearchTokensForMode,
   getVerseContrastLinks,
   getVerseSimilarityLinks,
+  getActionRootVerseIds,
   setRootFocusLevel,
+  setConceptFocusLevel,
+  setActionFocusLevel,
+  setContrastFocusLevel,
 } from '@/store/semanticStore';
-import type { RootFocusLevel } from '@/store/semanticStore';
+import type { RootFocusLevel, ConceptFocusLevel, ActionFocusLevel, ContrastFocusLevel } from '@/store/semanticStore';
+import { ACTION_PLACEHOLDER_WORDS } from '@/engine/semantic/actionDictionaries';
+import { CONTRAST_PLACEHOLDER_WORDS } from '@/engine/semantic/contrastEngine';
 
 // --- Root translation words to cycle through in the search placeholder ---
 const ROOT_PLACEHOLDER_WORDS = [
@@ -32,6 +38,14 @@ const ROOT_PLACEHOLDER_WORDS = [
   'Gratitude', 'Creation', 'Worship', 'Truth', 'Justice',
   'Wisdom', 'Faith', 'Repentance', 'Prayer', 'Light',
   'Fear', 'Hope', 'Strength', 'Trust', 'Resurrection',
+];
+
+// --- Concept/Domain words to cycle through in concept mode search placeholder ---
+const CONCEPT_PLACEHOLDER_WORDS = [
+  'Divine Essence', 'Mercy', 'Faith', 'Taqwa', 'Tawhid',
+  'Revelation', 'Knowledge', 'Worship', 'Repentance', 'Forgiveness',
+  'Eschatology', 'Paradise', 'Virtue', 'Justice', 'Guidance',
+  'Social Ethics', 'Disbelief', 'Prayer', 'Gratitude', 'Spiritual Consciousness',
 ];
 
 /**
@@ -90,23 +104,51 @@ const MODE_CONFIG: Array<{
   { mode: 'concept', label: 'Concept', icon: Layers, color: 'text-blue-400' },
   { mode: 'action', label: 'Action', icon: Swords, color: 'text-green-400' },
   { mode: 'contrast', label: 'Contrast', icon: Scale, color: 'text-red-400' },
-  { mode: 'similarity', label: 'Similarity', icon: Brain, color: 'text-purple-400' },
+  // similarity is intentionally excluded from the graph tab bar
+  // (still accessible in VerseDetail reading panel via similarityLinks prop)
 ];
 
 const Index = () => {
   const [semanticMode, setSemanticMode] = useState<SemanticMode>('root');
   const [searchQuery, setSearchQuery] = useState('');
   const { display: typingPlaceholder, currentWord: placeholderWord } = useTypingPlaceholder(ROOT_PLACEHOLDER_WORDS);
+  const { display: conceptTypingPlaceholder, currentWord: conceptPlaceholderWord } = useTypingPlaceholder(CONCEPT_PLACEHOLDER_WORDS);
+  const { display: actionTypingPlaceholder, currentWord: actionPlaceholderWord } = useTypingPlaceholder(ACTION_PLACEHOLDER_WORDS);
+  const { display: contrastTypingPlaceholder, currentWord: contrastPlaceholderWord } = useTypingPlaceholder(CONTRAST_PLACEHOLDER_WORDS);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [engineReady, setEngineReady] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Loading Quranic data...');
   const [showIsolated, setShowIsolated] = useState(false);
   const [rootFocusLevel, setRootFocusLevelState] = useState<RootFocusLevel>('focused');
+  const [conceptFocusLevel, setConceptFocusLevelState] = useState<ConceptFocusLevel>('focused');
+  const [actionFocusLevel, setActionFocusLevelState] = useState<ActionFocusLevel>('focused');
+  const [contrastFocusLevel, setContrastFocusLevelState] = useState<ContrastFocusLevel>('focused');
+  const [highlightedVerseIds, setHighlightedVerseIds] = useState<Set<string> | null>(null);
 
-  const handleFocusLevel = useCallback((level: RootFocusLevel) => {
-    setRootFocusLevel(level);      // update store module variable
-    setRootFocusLevelState(level); // trigger re-render + graphData recompute
+  const handleRootFocusLevel = useCallback((level: RootFocusLevel) => {
+    setRootFocusLevel(level);
+    setRootFocusLevelState(level);
+  }, []);
+
+  const handleConceptFocusLevel = useCallback((level: ConceptFocusLevel) => {
+    setConceptFocusLevel(level);
+    setConceptFocusLevelState(level);
+  }, []);
+
+  const handleActionFocusLevel = useCallback((level: ActionFocusLevel) => {
+    setActionFocusLevel(level);
+    setActionFocusLevelState(level);
+  }, []);
+
+  const handleContrastFocusLevel = useCallback((level: ContrastFocusLevel) => {
+    setContrastFocusLevel(level);
+    setContrastFocusLevelState(level);
+  }, []);
+
+  const handleActionFilter = useCallback((actionRoot: string) => {
+    const ids = getActionRootVerseIds(actionRoot);
+    setHighlightedVerseIds(ids.size > 0 ? ids : null);
   }, []);
 
   // Initialize engine on mount
@@ -131,21 +173,24 @@ const Index = () => {
 
   const graphData = useMemo(
     () => (engineReady ? buildGraphData(semanticMode) : { nodes: [], edges: [] }),
-    [semanticMode, engineReady, rootFocusLevel]
+    [semanticMode, engineReady, rootFocusLevel, conceptFocusLevel, actionFocusLevel, contrastFocusLevel]
   );
   const stats = useMemo(
     () => (engineReady ? getStats() : { verses: 0, roots: 0, concepts: 0, links: 0 }),
     [engineReady]
   );
 
-  // Auto-highlight: when no search query is active in root mode, highlight nodes matching
-  // the current fully-typed placeholder word. This creates a 10s animated highlight tour.
+  // Auto-highlight: when no search query is active, highlight nodes matching
+  // the current fully-typed placeholder word. Creates an animated 10s highlight tour.
   const effectiveSearchQuery = useMemo(() => {
     if (searchQuery) return searchQuery;
     // Pause auto-highlight when a node is selected so it doesn't interfere with focus
     if (semanticMode === 'root' && placeholderWord && !selectedNode) return placeholderWord.toLowerCase();
+    if (semanticMode === 'concept' && conceptPlaceholderWord && !selectedNode) return conceptPlaceholderWord.toLowerCase();
+    if (semanticMode === 'action' && actionPlaceholderWord && !selectedNode) return actionPlaceholderWord.toLowerCase();
+    if (semanticMode === 'contrast' && contrastPlaceholderWord && !selectedNode) return contrastPlaceholderWord.toLowerCase();
     return '';
-  }, [searchQuery, semanticMode, placeholderWord, selectedNode]);
+  }, [searchQuery, semanticMode, placeholderWord, conceptPlaceholderWord, actionPlaceholderWord, contrastPlaceholderWord, selectedNode]);
 
   // Isolated verses: all verses not in current mode's connected set
   const isolatedNodes = useMemo((): GraphNode[] => {
@@ -253,6 +298,7 @@ const Index = () => {
             selectedNodeId={selectedNode?.id ?? null}
             mode={semanticMode}
             isolatedNodes={isolatedNodes}
+            highlightedVerseIds={highlightedVerseIds}
           />
 
           {/* Top Bar */}
@@ -279,7 +325,13 @@ const Index = () => {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
                 type="text"
-                placeholder={semanticMode === 'root' ? typingPlaceholder : 'Search verses…'}
+                placeholder={
+                  semanticMode === 'root' ? typingPlaceholder :
+                  semanticMode === 'concept' ? conceptTypingPlaceholder :
+                  semanticMode === 'action' ? actionTypingPlaceholder :
+                  semanticMode === 'contrast' ? contrastTypingPlaceholder :
+                  'Search verses…'
+                }
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full glass-panel pl-10 pr-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 transition-all"
@@ -325,10 +377,67 @@ const Index = () => {
                 {(['broad', 'focused', 'deep'] as RootFocusLevel[]).map((level) => (
                   <button
                     key={level}
-                    onClick={() => handleFocusLevel(level)}
+                    onClick={() => handleRootFocusLevel(level)}
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
                       rootFocusLevel === level
                         ? 'bg-primary/20 text-primary border border-primary/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+                    }`}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Concept Focus Level — concept mode only */}
+            {semanticMode === 'concept' && (
+              <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many domain connections to show">
+                {(['broad', 'focused', 'deep'] as ConceptFocusLevel[]).map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => handleConceptFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                      conceptFocusLevel === level
+                        ? 'bg-blue-400/20 text-blue-300 border border-blue-400/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+                    }`}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Action Focus Level — action mode only */}
+            {semanticMode === 'action' && (
+              <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many behavioral connections to show">
+                {(['broad', 'focused', 'deep'] as ActionFocusLevel[]).map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => handleActionFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                      actionFocusLevel === level
+                        ? 'bg-green-400/20 text-green-300 border border-green-400/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+                    }`}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Contrast Focus Level — contrast mode only */}
+            {semanticMode === 'contrast' && (
+              <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many opposing connections to show">
+                {(['broad', 'focused', 'deep'] as ContrastFocusLevel[]).map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => handleContrastFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                      contrastFocusLevel === level
+                        ? 'bg-red-400/20 text-red-300 border border-red-400/30'
                         : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
                     }`}
                   >
@@ -425,6 +534,7 @@ const Index = () => {
             searchQuery={searchQuery}
             contrastLinks={selectedContrastLinks}
             similarityLinks={selectedSimilarityLinks}
+            onActionFilter={handleActionFilter}
           />
         </>
       </AnimatePresence>

@@ -1,20 +1,33 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Layers, Swords, Dna, ChevronDown, ChevronRight, GitFork, List, Scale, Brain } from 'lucide-react';
+import { X, Layers, Swords, Dna, Scale, Brain } from 'lucide-react';
 import type { Verse } from '@/engine/linguistic/types';
 import type { ActionEdge, ActionSummary, SemanticMode } from '@/engine/semantic/types';
 import type { Concept } from '@/engine/semantic/types';
-import type { SemanticCluster } from '@/engine/semantic/actionDictionaries';
-import { SEMANTIC_CLUSTER_LABELS } from '@/engine/semantic/actionDictionaries';
+import type { ActionFamily } from '@/engine/semantic/actionDictionaries';
+import {
+  ACTION_FAMILY_HUES,
+  ACTION_FAMILY_LABELS,
+} from '@/engine/semantic/actionDictionaries';
 import { computeActionSummary } from '@/engine/semantic/actionEngine';
 import type { VerseRootInsight } from '@/store/semanticStore';
-import { getVerseById, getSurahList } from '@/store/semanticStore';
-import { CONTRAST_DICTIONARY } from '@/engine/semantic/contrastEngine';
+import {
+  getVerseById,
+  getSurahList,
+  getDomainForConcept,
+  getActionRootVerseCount,
+} from '@/store/semanticStore';
+import { CONTRAST_DICTIONARY, CONTRAST_PAIR_HUES } from '@/engine/semantic/contrastEngine';
 
 interface ContrastLinkData {
   pairId: string;
+  category: string;
   partnerVerseId: string;
   score: number;
+  thisSide: 'A' | 'B';
+  topicStats: {
+    freqA: number; freqB: number; ratio: number; dominantSide: 'A' | 'B'; dominanceGap: number;
+  } | null;
 }
 
 interface SimilarityLinkData {
@@ -36,50 +49,10 @@ interface VerseDetailProps {
   searchQuery?: string;
   contrastLinks?: ContrastLinkData[];
   similarityLinks?: SimilarityLinkData[];
+  onActionFilter?: (actionRoot: string) => void;
 }
 
-// --- Labels ---
-
-const ACTOR_LABELS: Record<string, string> = {
-  divine: 'Allah',
-  human: 'Human',
-  believer: 'Believer',
-  disbeliever: 'Disbeliever',
-  angel: 'Angel',
-  nature: 'Nature',
-  prophet: 'Prophet',
-  hypocrite: 'Hypocrite',
-  shaytan: 'Shaytan',
-  mankind: 'Mankind',
-};
-
-const ACTOR_COLORS: Record<string, string> = {
-  divine: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/25',
-  human: 'text-blue-400 bg-blue-400/10 border-blue-400/25',
-  believer: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/25',
-  disbeliever: 'text-red-400 bg-red-400/10 border-red-400/25',
-  angel: 'text-purple-400 bg-purple-400/10 border-purple-400/25',
-  nature: 'text-teal-400 bg-teal-400/10 border-teal-400/25',
-  prophet: 'text-amber-300 bg-amber-300/10 border-amber-300/25',
-  hypocrite: 'text-orange-400 bg-orange-400/10 border-orange-400/25',
-  shaytan: 'text-rose-500 bg-rose-500/10 border-rose-500/25',
-  mankind: 'text-cyan-400 bg-cyan-400/10 border-cyan-400/25',
-};
-
-const TENSE_LABELS: Record<string, string> = {
-  past: 'Past',
-  present: 'Present',
-  future: 'Future',
-  imperative: 'Command',
-};
-
-const POLARITY_STYLES: Record<string, { dot: string; border: string; bg: string }> = {
-  positive: { dot: 'bg-emerald-400', border: 'border-emerald-400/15', bg: 'bg-emerald-400/5' },
-  negative: { dot: 'bg-red-400', border: 'border-red-400/15', bg: 'bg-red-400/5' },
-  neutral: { dot: 'bg-gray-400', border: 'border-gray-400/15', bg: 'bg-gray-400/5' },
-};
-
-// --- Root Badge (unchanged) ---
+// --- Root Badge ---
 
 function getRootBadgeClass(verseFrequency: number): string {
   if (verseFrequency >= 500)
@@ -139,12 +112,28 @@ const RootBadge: React.FC<{ insight: VerseRootInsight; searchQuery?: string }> =
 
 // --- Behavioral Summary Panel ---
 
-const ActionSummaryPanel: React.FC<{ summary: ActionSummary }> = ({ summary }) => {
-  const actorPct = Math.round((summary.dominantActorCount / summary.totalActions) * 100);
-  const totalTense = summary.tenseDistribution.past + summary.tenseDistribution.present
-    + summary.tenseDistribution.future + summary.tenseDistribution.imperative;
-  const polarityColor = summary.dominantPolarity === 'positive' ? 'text-emerald-400'
-    : summary.dominantPolarity === 'negative' ? 'text-red-400' : 'text-gray-400';
+const ActionBehavioralSummary: React.FC<{
+  summary: ActionSummary;
+  actions: ActionEdge[];
+  onActionFilter?: (actionRoot: string) => void;
+}> = ({ summary, actions, onActionFilter }) => {
+  const familyLabel = summary.dominantCluster
+    ? (ACTION_FAMILY_LABELS[summary.dominantCluster as ActionFamily] ?? summary.dominantCluster)
+    : '—';
+  const familyHue = summary.dominantCluster
+    ? (ACTION_FAMILY_HUES[summary.dominantCluster as ActionFamily] ?? null)
+    : null;
+
+  // Deduplicated action list (by canonical name), max 10
+  const uniqueActions = useMemo(() => {
+    const seen = new Set<string>();
+    return actions.filter((a) => {
+      const canonical = a.canonicalAction ?? a.englishMeaning ?? a.actionRoot;
+      if (seen.has(canonical)) return false;
+      seen.add(canonical);
+      return true;
+    }).slice(0, 10);
+  }, [actions]);
 
   return (
     <div className="rounded-lg border border-green-400/15 bg-green-400/5 p-3 space-y-2.5">
@@ -152,85 +141,45 @@ const ActionSummaryPanel: React.FC<{ summary: ActionSummary }> = ({ summary }) =
         Behavioral Summary
       </h4>
 
-      <div className="grid grid-cols-2 gap-2 text-[11px]">
-        {/* Dominant Actor */}
-        <div className="flex flex-col gap-0.5">
-          <span className="text-muted-foreground/60 text-[9px] uppercase">Dominant Actor</span>
-          <span className={`inline-flex items-center gap-1 ${ACTOR_COLORS[summary.dominantActor]?.split(' ')[0] ?? 'text-foreground'}`}>
-            <span className="font-medium">{ACTOR_LABELS[summary.dominantActor]}</span>
-            <span className="text-muted-foreground/50">({actorPct}%)</span>
-          </span>
-        </div>
-
-        {/* Most Frequent Verb */}
-        <div className="flex flex-col gap-0.5">
-          <span className="text-muted-foreground/60 text-[9px] uppercase">Top Verb</span>
-          <span className="text-foreground/80">
-            <span className="font-arabic text-[12px]">{summary.mostFrequentRoot}</span>
-            {summary.mostFrequentRootMeaning && (
-              <span className="text-muted-foreground/60 ml-1">({summary.mostFrequentRootMeaning})</span>
-            )}
-          </span>
-        </div>
-
-        {/* Dominant Cluster */}
-        {summary.dominantCluster && (
-          <div className="flex flex-col gap-0.5">
-            <span className="text-muted-foreground/60 text-[9px] uppercase">Category</span>
-            <span className="text-foreground/80">
-              {SEMANTIC_CLUSTER_LABELS[summary.dominantCluster]}
-            </span>
-          </div>
-        )}
-
-        {/* Polarity */}
-        <div className="flex flex-col gap-0.5">
-          <span className="text-muted-foreground/60 text-[9px] uppercase">Polarity</span>
-          <span className={polarityColor + ' font-medium capitalize'}>
-            {summary.dominantPolarity}
-          </span>
-        </div>
+      {/* Category */}
+      <div className="flex flex-col gap-0.5">
+        <span className="text-muted-foreground/60 text-[9px] uppercase">Category</span>
+        <span className="flex items-center gap-1.5 text-[11px]">
+          {familyHue != null && (
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: `hsl(${familyHue}, 55%, 48%)` }} />
+          )}
+          <span className="text-foreground/85 font-medium">{familyLabel}</span>
+        </span>
       </div>
 
-      {/* Tense Distribution Bar */}
-      {totalTense > 0 && (
-        <div className="space-y-1">
-          <span className="text-muted-foreground/60 text-[9px] uppercase">Tense Distribution</span>
-          <div className="flex h-1.5 rounded-full overflow-hidden bg-white/5">
-            {summary.tenseDistribution.past > 0 && (
-              <div
-                className="bg-blue-400/70"
-                style={{ width: `${(summary.tenseDistribution.past / totalTense) * 100}%` }}
-                title={`Past: ${summary.tenseDistribution.past}`}
-              />
-            )}
-            {summary.tenseDistribution.present > 0 && (
-              <div
-                className="bg-green-400/70"
-                style={{ width: `${(summary.tenseDistribution.present / totalTense) * 100}%` }}
-                title={`Present: ${summary.tenseDistribution.present}`}
-              />
-            )}
-            {summary.tenseDistribution.imperative > 0 && (
-              <div
-                className="bg-amber-400/70"
-                style={{ width: `${(summary.tenseDistribution.imperative / totalTense) * 100}%` }}
-                title={`Command: ${summary.tenseDistribution.imperative}`}
-              />
-            )}
-            {summary.tenseDistribution.future > 0 && (
-              <div
-                className="bg-purple-400/70"
-                style={{ width: `${(summary.tenseDistribution.future / totalTense) * 100}%` }}
-                title={`Future: ${summary.tenseDistribution.future}`}
-              />
-            )}
-          </div>
-          <div className="flex gap-3 text-[9px] text-muted-foreground/50">
-            {summary.tenseDistribution.past > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400/70" />Past</span>}
-            {summary.tenseDistribution.present > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-400/70" />Present</span>}
-            {summary.tenseDistribution.imperative > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-amber-400/70" />Command</span>}
-            {summary.tenseDistribution.future > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-purple-400/70" />Future</span>}
+      {/* Actions */}
+      {uniqueActions.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-muted-foreground/60 text-[9px] uppercase">Actions</span>
+          <div className="flex flex-col gap-1">
+            {uniqueActions.map((a) => {
+              const canonical = a.canonicalAction ?? a.englishMeaning ?? a.actionRoot;
+              const rootVerseCount = getActionRootVerseCount(a.actionRoot);
+              return (
+                <div key={a.id} className="flex items-center gap-2 text-xs group">
+                  {a.verbText && (
+                    <span className="font-arabic text-foreground/85 text-sm leading-tight flex-shrink-0">
+                      {a.verbText}
+                    </span>
+                  )}
+                  <span className="text-foreground/70">{canonical}</span>
+                  {rootVerseCount > 0 && onActionFilter && (
+                    <button
+                      onClick={() => onActionFilter(a.actionRoot)}
+                      className="ml-auto text-[9px] text-muted-foreground/40 hover:text-green-400/70 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title={`Highlight ${rootVerseCount} verses with this root`}
+                    >
+                      {rootVerseCount} verses ↗
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -238,251 +187,7 @@ const ActionSummaryPanel: React.FC<{ summary: ActionSummary }> = ({ summary }) =
   );
 };
 
-// --- Action Flow Graph (Mini SVG) ---
 
-const ActionFlowGraph: React.FC<{ actions: ActionEdge[] }> = ({ actions }) => {
-  // Collect unique nodes
-  const actors = new Set<string>();
-  const targets = new Set<string>();
-  for (const a of actions) {
-    actors.add(a.actorType);
-    if (a.targetType) targets.add(typeof a.targetType === 'string' ? a.targetType : a.targetType);
-  }
-
-  const actorList = [...actors];
-  const targetList = [...targets].filter((t) => !actors.has(t));
-  const allTargets = [...targets];
-
-  const ROW_H = 36;
-  const leftX = 30;
-  const midX = 160;
-  const rightX = 290;
-  const svgW = 330;
-  const svgH = Math.max(actorList.length, allTargets.length, 1) * ROW_H + 20;
-
-  return (
-    <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} className="text-xs">
-      <defs>
-        <marker id="arrow" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
-          <path d="M0,0 L10,3 L0,6 Z" fill="currentColor" className="text-green-400/50" />
-        </marker>
-      </defs>
-
-      {actions.map((a, i) => {
-        const actorIdx = actorList.indexOf(a.actorType);
-        const targetKey = a.targetType ? (typeof a.targetType === 'string' ? a.targetType : a.targetType) : null;
-        const targetIdx = targetKey ? allTargets.indexOf(targetKey) : -1;
-
-        const y1 = actorIdx * ROW_H + ROW_H / 2 + 10;
-        const y2 = targetIdx >= 0 ? targetIdx * ROW_H + ROW_H / 2 + 10 : y1;
-
-        const verbLabel = a.englishMeaning || a.actionRoot;
-
-        return (
-          <g key={a.id}>
-            {/* Edge line */}
-            <line
-              x1={leftX + 40} y1={y1}
-              x2={targetKey ? rightX - 40 : midX + 30} y2={y2}
-              stroke="currentColor" className="text-green-400/30"
-              strokeWidth={1} markerEnd="url(#arrow)"
-            />
-            {/* Verb label on edge */}
-            <text
-              x={midX} y={(y1 + y2) / 2 - 4}
-              textAnchor="middle"
-              className="fill-green-300/70 text-[9px]"
-            >
-              {verbLabel.length > 15 ? verbLabel.slice(0, 15) + '...' : verbLabel}
-            </text>
-          </g>
-        );
-      })}
-
-      {/* Actor nodes */}
-      {actorList.map((actor, i) => (
-        <g key={`actor-${actor}`}>
-          <rect
-            x={leftX - 28} y={i * ROW_H + 10}
-            width={68} height={ROW_H - 8}
-            rx={6}
-            className="fill-white/5 stroke-green-400/20"
-            strokeWidth={0.5}
-          />
-          <text
-            x={leftX + 6} y={i * ROW_H + ROW_H / 2 + 12}
-            textAnchor="middle"
-            className="fill-green-300 text-[10px] font-medium"
-          >
-            {ACTOR_LABELS[actor] ?? actor}
-          </text>
-        </g>
-      ))}
-
-      {/* Target nodes */}
-      {allTargets.map((target, i) => (
-        <g key={`target-${target}`}>
-          <rect
-            x={rightX - 28} y={i * ROW_H + 10}
-            width={68} height={ROW_H - 8}
-            rx={6}
-            className="fill-white/5 stroke-orange-400/20"
-            strokeWidth={0.5}
-          />
-          <text
-            x={rightX + 6} y={i * ROW_H + ROW_H / 2 + 12}
-            textAnchor="middle"
-            className="fill-orange-300 text-[10px] font-medium"
-          >
-            {(ACTOR_LABELS[target] ?? target).length > 10
-              ? (ACTOR_LABELS[target] ?? target).slice(0, 10) + '...'
-              : ACTOR_LABELS[target] ?? target}
-          </text>
-        </g>
-      ))}
-    </svg>
-  );
-};
-
-// --- Expandable Action Row ---
-
-const ActionRow: React.FC<{ action: ActionEdge; verse?: Verse; searchQuery?: string }> = ({ action, verse, searchQuery }) => {
-  const [expanded, setExpanded] = useState(false);
-  const pStyle = POLARITY_STYLES[action.polarity] ?? POLARITY_STYLES.neutral;
-  const actorColor = ACTOR_COLORS[action.actorType] ?? ACTOR_COLORS.human;
-
-  // Highlight actor if search matches actor label, type key, or English meaning
-  const q = searchQuery?.toLowerCase() ?? '';
-  const actorLabel = ACTOR_LABELS[action.actorType] ?? action.actorType;
-  const isActorMatch = q.length > 0 && (
-    actorLabel.toLowerCase().includes(q) ||
-    action.actorType.toLowerCase().includes(q)
-  );
-  const isVerbMatch = q.length > 0 && (
-    (action.englishMeaning?.toLowerCase().includes(q) ?? false) ||
-    action.actionRoot.includes(q)
-  );
-
-  return (
-    <div className={`rounded-lg border ${pStyle.border} ${pStyle.bg} overflow-hidden`}>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 text-xs px-3 py-2 text-left hover:bg-white/5 transition-colors"
-      >
-        {/* Polarity dot */}
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${pStyle.dot}`} />
-
-        {/* Actor badge */}
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-all ${actorColor} ${
-          isActorMatch ? 'ring-2 ring-white/40 scale-110' : ''
-        }`}>
-          {ACTOR_LABELS[action.actorType] ?? action.actorType}
-        </span>
-
-        <span className="text-muted-foreground/60">→</span>
-
-        {/* Verb: Arabic + English */}
-        <span className={`flex items-center gap-1 min-w-0 ${isVerbMatch ? 'text-yellow-300' : ''}`}>
-          <span className="font-arabic text-foreground/90 text-[13px]">{action.verbText || action.actionRoot}</span>
-          {action.englishMeaning && (
-            <span className={`truncate ${isVerbMatch ? 'text-yellow-300/80' : 'text-muted-foreground/70'}`}>
-              ({action.englishMeaning})
-            </span>
-          )}
-        </span>
-
-        {/* Target */}
-        {action.targetType && (
-          <>
-            <span className="text-muted-foreground/60">→</span>
-            <span className="text-orange-300 text-[10px]">
-              {ACTOR_LABELS[action.targetType as string] ?? action.targetType}
-            </span>
-          </>
-        )}
-
-        {/* Right side: tense + frequency */}
-        <span className="ml-auto flex items-center gap-2 flex-shrink-0">
-          <span className="text-muted-foreground/50 text-[9px] uppercase">
-            {TENSE_LABELS[action.tense] ?? action.tense}
-          </span>
-          {action.rootFrequency > 0 && (
-            <span className="text-muted-foreground/40 text-[9px]">{action.rootFrequency}×</span>
-          )}
-          {expanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/40" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/40" />}
-        </span>
-      </button>
-
-      {/* Expanded: Verse Context */}
-      {expanded && verse && (
-        <div className="px-3 pb-2.5 pt-1 border-t border-white/5 space-y-1.5">
-          <div
-            className="text-sm font-arabic leading-relaxed text-foreground/80 text-right"
-            dir="rtl"
-            dangerouslySetInnerHTML={{
-              __html: highlightVerbInArabic(verse.textArabic, action.verbText || action.actionRoot),
-            }}
-          />
-          <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
-            {verse.textTranslation}
-          </p>
-          {action.semanticCluster && (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] border border-green-400/15 bg-green-400/5 text-green-400/70">
-              {SEMANTIC_CLUSTER_LABELS[action.semanticCluster]}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-/** Highlight the verb word inside the Arabic verse text. */
-function highlightVerbInArabic(arabicText: string, verbText: string): string {
-  if (!verbText) return arabicText;
-  // Escape regex special chars
-  const escaped = verbText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Match the verb (with possible diacritics differences)
-  return arabicText.replace(
-    new RegExp(`(${escaped})`, 'g'),
-    '<span class="text-green-400 font-bold">$1</span>'
-  );
-}
-
-// --- Cluster Section ---
-
-const ClusterSection: React.FC<{
-  clusterKey: string;
-  actions: ActionEdge[];
-  verse?: Verse;
-  defaultOpen?: boolean;
-  searchQuery?: string;
-}> = ({ clusterKey, actions, verse, defaultOpen = false, searchQuery }) => {
-  const [open, setOpen] = useState(defaultOpen);
-  const label = clusterKey === 'uncategorized'
-    ? 'Other Actions'
-    : SEMANTIC_CLUSTER_LABELS[clusterKey as SemanticCluster] ?? clusterKey;
-
-  return (
-    <div className="rounded-lg border border-border/20 overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-white/5 transition-colors"
-      >
-        {open ? <ChevronDown className="w-3 h-3 text-muted-foreground/50" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/50" />}
-        <span className="text-foreground/80 font-medium">{label}</span>
-        <span className="text-muted-foreground/40 text-[10px]">{actions.length}</span>
-      </button>
-      {open && (
-        <div className="px-2 pb-2 space-y-1.5">
-          {actions.map((a) => (
-            <ActionRow key={a.id} action={a} verse={verse} searchQuery={searchQuery} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
 
 // --- Main Component ---
 
@@ -499,31 +204,16 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
   searchQuery,
   contrastLinks = [],
   similarityLinks = [],
+  onActionFilter,
 }) => {
   const surahList = useMemo(() => getSurahList(), []);
   const surahMap = useMemo(() => new Map(surahList.map((s) => [s.number, s.name])), [surahList]);
-  const [actionViewMode, setActionViewMode] = useState<'list' | 'flow'>('list');
-
-  // Group actions by semantic cluster
-  const clusteredActions = useMemo(() => {
-    const grouped = new Map<string, ActionEdge[]>();
-    for (const a of actions) {
-      const key = a.semanticCluster ?? 'uncategorized';
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key)!.push(a);
-    }
-    return new Map(
-      [...grouped.entries()].sort((a, b) => b[1].length - a[1].length)
-    );
-  }, [actions]);
 
   // Compute summary from actions if not provided
   const summary = useMemo(
     () => actionSummary ?? computeActionSummary(actions),
     [actionSummary, actions]
   );
-
-  const hasMultipleClusters = clusteredActions.size > 1;
 
   if (!verse) return null;
 
@@ -617,19 +307,34 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
                 <div className="flex flex-wrap gap-2">
                   {concepts.map(({ concept, weight }) => {
                     const q = searchQuery?.toLowerCase() ?? '';
+                    const domain = getDomainForConcept(concept.id);
                     const isConceptMatch = q.length > 0 && (
                       concept.name.toLowerCase().includes(q) ||
                       concept.id.toLowerCase().includes(q) ||
-                      (concept.nameAr?.includes(searchQuery ?? '') ?? false)
+                      (concept.nameAr?.includes(searchQuery ?? '') ?? false) ||
+                      (domain?.name.toLowerCase().includes(q) ?? false) ||
+                      (domain?.id.toLowerCase().includes(q) ?? false)
                     );
+                    // Domain dot color — uses HSL hue from domain
+                    const dotStyle = domain
+                      ? { backgroundColor: `hsla(${domain.colorHue}, 70%, 55%, 0.9)` }
+                      : undefined;
                     return (
                       <span
                         key={concept.id}
                         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-blue-400/20 bg-blue-400/10 text-blue-300 transition-all ${
                           isConceptMatch ? 'ring-2 ring-blue-400/70 bg-blue-400/20 scale-105' : ''
                         }`}
-                        title={concept.description}
+                        title={domain ? `${domain.name} — ${concept.description}` : concept.description}
                       >
+                        {/* Domain indicator dot */}
+                        {domain && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                            style={dotStyle}
+                            title={domain.name}
+                          />
+                        )}
                         {concept.nameAr && (
                           <span className="font-arabic text-[11px]">{concept.nameAr}</span>
                         )}
@@ -647,63 +352,19 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
             {/* Action Intelligence */}
             {actions.length > 0 && (
               <div className="space-y-3">
-                {/* Section Header with View Toggle */}
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                    <Swords className="w-3.5 h-3.5 text-green-400" />
-                    Action Intelligence
-                    <span className="text-muted-foreground/40 text-[10px] normal-case ml-1">{actions.length} actions</span>
-                  </h3>
-                  <div className="flex items-center gap-0.5 bg-white/5 rounded-md p-0.5">
-                    <button
-                      onClick={() => setActionViewMode('list')}
-                      className={`p-1 rounded transition-colors ${actionViewMode === 'list' ? 'bg-green-400/20 text-green-400' : 'text-muted-foreground/50 hover:text-muted-foreground'}`}
-                      title="List View"
-                    >
-                      <List className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={() => setActionViewMode('flow')}
-                      className={`p-1 rounded transition-colors ${actionViewMode === 'flow' ? 'bg-green-400/20 text-green-400' : 'text-muted-foreground/50 hover:text-muted-foreground'}`}
-                      title="Flow View"
-                    >
-                      <GitFork className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <Swords className="w-3.5 h-3.5 text-green-400" />
+                  Action Intelligence
+                  <span className="text-muted-foreground/40 text-[10px] normal-case ml-1">{actions.length} actions</span>
+                </h3>
 
                 {/* Behavioral Summary */}
-                {summary && <ActionSummaryPanel summary={summary} />}
-
-                {/* List View */}
-                {actionViewMode === 'list' && (
-                  <div className="space-y-2">
-                    {hasMultipleClusters ? (
-                      // Grouped by cluster
-                      [...clusteredActions.entries()].map(([clusterKey, clusterActions], i) => (
-                        <ClusterSection
-                          key={clusterKey}
-                          clusterKey={clusterKey}
-                          actions={clusterActions}
-                          verse={verse}
-                          defaultOpen={i === 0}
-                          searchQuery={searchQuery}
-                        />
-                      ))
-                    ) : (
-                      // Flat list (single or no cluster)
-                      actions.map((action) => (
-                        <ActionRow key={action.id} action={action} verse={verse} searchQuery={searchQuery} />
-                      ))
-                    )}
-                  </div>
-                )}
-
-                {/* Flow View */}
-                {actionViewMode === 'flow' && (
-                  <div className="rounded-lg border border-green-400/15 bg-green-400/5 p-2">
-                    <ActionFlowGraph actions={actions} />
-                  </div>
+                {summary && (
+                  <ActionBehavioralSummary
+                    summary={summary}
+                    actions={actions}
+                    onActionFilter={onActionFilter}
+                  />
                 )}
               </div>
             )}
@@ -711,50 +372,142 @@ const VerseDetail: React.FC<VerseDetailProps> = ({
             {/* Contrast Intelligence */}
             {contrastLinks.length > 0 && (
               <div>
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Scale className="w-3.5 h-3.5 text-red-400" />
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <Scale className="w-3.5 h-3.5 text-red-400/80" />
                   Contrast Intelligence
-                  <span className="text-muted-foreground/40 text-[10px] normal-case ml-1">{contrastLinks.length} links</span>
                 </h3>
-                <div className="space-y-1.5">
-                  {contrastLinks.slice(0, 5).map((cl) => {
-                    const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === cl.pairId);
-                    const partner = getVerseById(cl.partnerVerseId);
-                    const partnerSurah = partner ? (surahMap.get(partner.surahId) ?? partner.surahId) : '';
-                    return (
-                      <div
-                        key={`${cl.pairId}-${cl.partnerVerseId}`}
-                        className="flex items-start gap-2 px-2.5 py-1.5 rounded-lg border border-red-400/15 bg-red-400/5 text-xs"
-                      >
-                        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                          {pair && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-arabic text-red-300/90 text-[11px]">{pair.labelA}</span>
-                              <span className="text-muted-foreground/50">↔</span>
-                              <span className="font-arabic text-red-300/90 text-[11px]">{pair.labelB}</span>
-                              <span className="text-[9px] text-muted-foreground/50 uppercase ml-1">{pair.category}</span>
+                <div className="space-y-3">
+                  {(() => {
+                    // Group by pairId — one card per pair with freq asymmetry + partner list
+                    const seenPairs = new Map<string, ContrastLinkData>();
+                    const pairPartners = new Map<string, ContrastLinkData[]>();
+                    for (const cl of contrastLinks) {
+                      if (!seenPairs.has(cl.pairId)) seenPairs.set(cl.pairId, cl);
+                      if (!pairPartners.has(cl.pairId)) pairPartners.set(cl.pairId, []);
+                      pairPartners.get(cl.pairId)!.push(cl);
+                    }
+                    return [...seenPairs.entries()].map(([pairId, firstLink]) => {
+                      const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === pairId);
+                      const hues = CONTRAST_PAIR_HUES[pairId];
+                      const hueA = hues?.hueA ?? 43;
+                      const hueB = hues?.hueB ?? 270;
+                      const stats = firstLink.topicStats;
+                      const thisSide = firstLink.thisSide;
+                      const myHue = thisSide === 'A' ? hueA : hueB;
+                      const oppHue = thisSide === 'A' ? hueB : hueA;
+                      const myLabel = thisSide === 'A' ? (pair?.labelA ?? 'A') : (pair?.labelB ?? 'B');
+                      const oppLabel = thisSide === 'A' ? (pair?.labelB ?? 'B') : (pair?.labelA ?? 'A');
+                      const partners = pairPartners.get(pairId) ?? [];
+                      const maxFreq = stats ? Math.max(stats.freqA, stats.freqB, 1) : 1;
+                      const barA = stats ? (stats.freqA / maxFreq) * 100 : 50;
+                      const barB = stats ? (stats.freqB / maxFreq) * 100 : 50;
+                      const ratioDisplay = stats
+                        ? (stats.ratio >= 1
+                          ? `${stats.ratio.toFixed(2)}:1`
+                          : `1:${(1 / stats.ratio).toFixed(2)}`)
+                        : null;
+                      return (
+                        <div key={pairId} className="rounded-lg border border-border/20 bg-white/[0.02] p-3 space-y-3">
+                          {/* Pair header */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium" style={{ color: `hsla(${hueA}, 75%, 65%, 1)` }}>
+                                {pair?.labelA ?? '—'}
+                              </span>
+                              <span className="text-muted-foreground/35 text-xs">↔</span>
+                              <span className="text-sm font-medium" style={{ color: `hsla(${hueB}, 75%, 65%, 1)` }}>
+                                {pair?.labelB ?? '—'}
+                              </span>
+                            </div>
+                            <span className="text-[9px] text-muted-foreground/45 uppercase tracking-wider border border-border/25 rounded px-1.5 py-0.5">
+                              {pair?.category ?? firstLink.category}
+                            </span>
+                          </div>
+
+                          {/* Side indicator */}
+                          <div className="flex items-center gap-1.5 text-[10px]">
+                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: `hsla(${myHue}, 70%, 55%, 1)` }} />
+                            <span className="text-muted-foreground/55">This verse is on the</span>
+                            <span className="font-semibold" style={{ color: `hsla(${myHue}, 75%, 65%, 1)` }}>{myLabel}</span>
+                            <span className="text-muted-foreground/55">side</span>
+                          </div>
+
+                          {/* Frequency Asymmetry bars */}
+                          {stats && (
+                            <div className="space-y-2">
+                              <div className="text-[9px] text-muted-foreground/45 uppercase tracking-wider">
+                                Frequency Asymmetry
+                              </div>
+                              {/* Bar A */}
+                              <div className="space-y-0.5">
+                                <div className="flex justify-between text-[10px]">
+                                  <span style={{ color: `hsla(${hueA}, 70%, 65%, 1)` }}>{pair?.labelA}</span>
+                                  <span className="text-muted-foreground/55">{stats.freqA} verses</span>
+                                </div>
+                                <div className="h-1.5 w-full rounded-full bg-white/5">
+                                  <div
+                                    className="h-full rounded-full"
+                                    style={{ width: `${barA}%`, backgroundColor: `hsla(${hueA}, 65%, 50%, 0.75)` }}
+                                  />
+                                </div>
+                              </div>
+                              {/* Bar B */}
+                              <div className="space-y-0.5">
+                                <div className="flex justify-between text-[10px]">
+                                  <span style={{ color: `hsla(${hueB}, 70%, 65%, 1)` }}>{pair?.labelB}</span>
+                                  <span className="text-muted-foreground/55">{stats.freqB} verses</span>
+                                </div>
+                                <div className="h-1.5 w-full rounded-full bg-white/5">
+                                  <div
+                                    className="h-full rounded-full"
+                                    style={{ width: `${barB}%`, backgroundColor: `hsla(${hueB}, 65%, 50%, 0.75)` }}
+                                  />
+                                </div>
+                              </div>
+                              {/* Stats row */}
+                              <div className="flex gap-2.5 text-[9px] text-muted-foreground/45 pt-0.5 flex-wrap">
+                                <span>Gap: {stats.dominanceGap > 0 ? '+' : ''}{stats.dominanceGap}</span>
+                                <span>·</span>
+                                <span>Ratio: {ratioDisplay}</span>
+                                <span>·</span>
+                                <span>
+                                  Dominant:{' '}
+                                  <span style={{ color: `hsla(${stats.dominantSide === 'A' ? hueA : hueB}, 70%, 65%, 1)` }}>
+                                    {stats.dominantSide === 'A' ? (pair?.labelA ?? 'A') : (pair?.labelB ?? 'B')}
+                                  </span>
+                                </span>
+                              </div>
                             </div>
                           )}
-                          <div className="text-muted-foreground/60 text-[10px]">
-                            ↳ {partnerSurah}:{partner?.ayahNumber}
-                          </div>
-                          {partner && (
-                            <div className="text-muted-foreground/50 text-[10px] truncate">
-                              {partner.textTranslation.slice(0, 60)}…
-                            </div>
+
+                          {/* Partner verses */}
+                          {partners.slice(0, 3).map((cl) => {
+                            const partner = getVerseById(cl.partnerVerseId);
+                            const partnerSurah = partner ? (surahMap.get(partner.surahId) ?? partner.surahId) : '';
+                            return (
+                              <div key={cl.partnerVerseId} className="border-t border-border/15 pt-2 text-[10px]">
+                                <div className="flex items-center gap-1.5 mb-0.5">
+                                  <span className="w-1 h-1 rounded-full flex-shrink-0" style={{ backgroundColor: `hsla(${oppHue}, 65%, 55%, 0.9)` }} />
+                                  <span className="text-muted-foreground/65 font-medium">{partnerSurah}:{partner?.ayahNumber}</span>
+                                  <span className="ml-auto" style={{ color: `hsla(${oppHue}, 60%, 60%, 0.65)` }}>{oppLabel}</span>
+                                </div>
+                                {partner && (
+                                  <p className="text-muted-foreground/45 leading-relaxed truncate">
+                                    {partner.textTranslation.slice(0, 70)}…
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {partners.length > 3 && (
+                            <p className="text-[9px] text-muted-foreground/30 pt-0.5">
+                              +{partners.length - 3} more opposing verses
+                            </p>
                           )}
                         </div>
-                        <span className="text-red-400/50 text-[9px] flex-shrink-0 mt-0.5">
-                          {Math.round(cl.score * 100)}%
-                        </span>
-                      </div>
-                    );
-                  })}
-                  {contrastLinks.length > 5 && (
-                    <p className="text-[9px] text-muted-foreground/40 pl-1">
-                      +{contrastLinks.length - 5} more contrast links
-                    </p>
-                  )}
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             )}

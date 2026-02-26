@@ -24,7 +24,7 @@ import {
 } from './similarityEngine';
 
 const DB_NAME = 'ayamakna-cache';
-const DB_VERSION = 9; // bumped: root links use semantic cluster filtering + stored in Supabase
+const DB_VERSION = 12; // bumped: verb-only action edges (filter non-verbs), expanded ACTION_FAMILY_MAP
 const STORE_NAME = 'semantic';
 const CACHE_KEY = 'main';
 

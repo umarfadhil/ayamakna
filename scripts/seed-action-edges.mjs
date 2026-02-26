@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 // =============================================================================
-// Seed Action Edges into Supabase
+// Seed Action Edges into Supabase (v2 — uses ayamakna_verse_tokens as source)
 // Usage: node scripts/seed-action-edges.mjs
-// Requires: temporary INSERT policy on ayamakna_action_edges
+// Requires: temporary DELETE + INSERT policy on ayamakna_action_edges
+//
+// Key change from v1: Uses ayamakna_verse_tokens (morphologically-analyzed tokens)
+// instead of raw verse text with weak POS heuristics.
+// Only seeds tokens whose root exists in ACTION_FAMILY_MAP — guarantees every
+// edge has a valid semantic_cluster and corresponds to a recognized verb root.
 // =============================================================================
 
 import { createClient } from '@supabase/supabase-js';
@@ -12,43 +17,130 @@ const SUPABASE_ANON_KEY = '[REDACTED_SUPABASE_ANON_KEY]';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- Diacritics stripping (mirrors src/engine/linguistic/rootExtractor.ts) ---
+// --- Diacritics stripping ---
 const DIACRITICS = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED]/g;
 function stripDiacritics(text) {
-  return text.replace(DIACRITICS, '');
+  return text ? text.replace(DIACRITICS, '') : '';
 }
 
-// --- POS classification (mirrors semanticStore.ts tokenizer) ---
-const PARTICLES = new Set(['في', 'من', 'الى', 'على', 'عن', 'مع', 'بين', 'ان', 'انما', 'الا', 'لا', 'ما', 'هل', 'قد', 'لن', 'لم', 'اذ', 'اذا', 'كل', 'بعد', 'قبل', 'عند', 'حيث', 'اي', 'كيف', 'متى', 'اين']);
-const CONJUNCTIONS = new Set(['و', 'ف', 'ثم', 'او', 'لكن', 'بل', 'حتى', 'ام']);
-const PRONOUNS = new Set(['هو', 'هي', 'هم', 'هن', 'انت', 'انتم', 'نحن', 'انا', 'الذي', 'الذين', 'التي', 'ذلك', 'هذا', 'اياك', 'هذه', 'تلك', 'اولئك', 'ما', 'من']);
+// =============================================================================
+// ACTION_FAMILY_MAP — mirrors src/engine/semantic/actionDictionaries.ts
+// Only roots in this map will be seeded as action edges.
+// Update this when actionDictionaries.ts is updated.
+// =============================================================================
+const ACTION_FAMILY_MAP = {
+  // WORSHIP & DEVOTION
+  'عبد': 'worship_devotion', 'صلو': 'worship_devotion', 'سجد': 'worship_devotion',
+  'صوم': 'worship_devotion', 'زكو': 'worship_devotion', 'حجج': 'worship_devotion',
+  'سبح': 'worship_devotion', 'حمد': 'worship_devotion', 'ذكر': 'worship_devotion',
+  'شكر': 'worship_devotion', 'قنت': 'worship_devotion', 'ركع': 'worship_devotion',
+  'طوف': 'worship_devotion', 'نذر': 'worship_devotion', 'طهر': 'worship_devotion',
+  'خشع': 'worship_devotion', 'صلح': 'worship_devotion',
+  'امن': 'worship_devotion', 'أمن': 'worship_devotion', 'طوع': 'worship_devotion',
 
-function classifyPOS(word, root) {
-  if (PARTICLES.has(word)) return 'particle';
-  if (CONJUNCTIONS.has(word)) return 'conjunction';
-  if (PRONOUNS.has(word)) return 'pronoun';
-  if (/^[يتان]/.test(word) && root && word.length >= 4) return 'verb';
-  if (word.endsWith('وا') && root) return 'verb';
-  if (/^(ا[سعقف]|ف[ا])/.test(word) && root && word.length >= 4) return 'verb';
-  if (word === 'الله' || word === 'لله') return 'proper_noun';
-  return 'noun';
-}
+  // MORAL CONDUCT
+  'صبر': 'moral_conduct', 'عدل': 'moral_conduct', 'صدق': 'moral_conduct',
+  'وفي': 'moral_conduct', 'عفو': 'moral_conduct', 'نصح': 'moral_conduct',
+  'نفق': 'moral_conduct', 'برر': 'moral_conduct', 'عهد': 'moral_conduct',
+  'وصي': 'moral_conduct', 'امر': 'moral_conduct', 'نهي': 'moral_conduct',
+  'احسن': 'moral_conduct', 'عون': 'moral_conduct', 'رحم': 'moral_conduct',
+  'عمل': 'moral_conduct', 'فعل': 'moral_conduct', 'نفع': 'moral_conduct',
+  'قوم': 'moral_conduct', 'تبع': 'moral_conduct',
+
+  // DIVINE COMMAND
+  'وحي': 'divine_command', 'اذن': 'divine_command', 'حرم': 'divine_command',
+  'فرض': 'divine_command', 'شرع': 'divine_command', 'كلم': 'divine_command',
+  'نزل': 'divine_command', 'كتب': 'divine_command', 'قضي': 'divine_command',
+  'حكم': 'divine_command', 'امل': 'divine_command', 'اوحي': 'divine_command',
+  'يسر': 'divine_command', 'فصل': 'divine_command', 'ولي': 'divine_command',
+
+  // DIVINE CREATION
+  'خلق': 'divine_creation', 'جعل': 'divine_creation', 'صور': 'divine_creation',
+  'نفخ': 'divine_creation', 'حيي': 'divine_creation', 'موت': 'divine_creation',
+  'بعث': 'divine_creation', 'رزق': 'divine_creation', 'مطر': 'divine_creation',
+  'نبت': 'divine_creation', 'دبر': 'divine_creation', 'انشأ': 'divine_creation',
+  'فطر': 'divine_creation', 'قدر': 'divine_creation',
+  'كون': 'divine_creation', 'سوي': 'divine_creation', 'غني': 'divine_creation',
+  'ملك': 'divine_creation',
+
+  // KNOWLEDGE & REFLECTION
+  'علم': 'knowledge_reflection', 'عقل': 'knowledge_reflection', 'فقه': 'knowledge_reflection',
+  'فكر': 'knowledge_reflection', 'تدبر': 'knowledge_reflection', 'نظر': 'knowledge_reflection',
+  'بصر': 'knowledge_reflection', 'سمع': 'knowledge_reflection', 'قرء': 'knowledge_reflection',
+  'درس': 'knowledge_reflection', 'حفظ': 'knowledge_reflection', 'شهد': 'knowledge_reflection',
+  'يقن': 'knowledge_reflection', 'خبر': 'knowledge_reflection', 'تفكر': 'knowledge_reflection',
+
+  // REJECTION & DENIAL
+  'كفر': 'rejection_denial', 'شرك': 'rejection_denial', 'كذب': 'rejection_denial',
+  'جحد': 'rejection_denial', 'بغي': 'rejection_denial', 'طغي': 'rejection_denial',
+  'حاد': 'rejection_denial', 'ريب': 'rejection_denial', 'زيغ': 'rejection_denial',
+  'ضل': 'rejection_denial', 'ارتد': 'rejection_denial', 'انكر': 'rejection_denial',
+  'استكبر': 'rejection_denial', 'هزأ': 'rejection_denial',
+
+  // PROCLAMATION & WARNING
+  'قول': 'proclamation_warning', 'دعو': 'proclamation_warning', 'بلغ': 'proclamation_warning',
+  'انذر': 'proclamation_warning', 'بشر': 'proclamation_warning', 'نبء': 'proclamation_warning',
+  'وعظ': 'proclamation_warning', 'حدث': 'proclamation_warning', 'نطق': 'proclamation_warning',
+  'تلو': 'proclamation_warning', 'قصص': 'proclamation_warning', 'خطب': 'proclamation_warning',
+  'جدل': 'proclamation_warning', 'سءل': 'proclamation_warning', 'ندي': 'proclamation_warning',
+
+  // SOCIAL & FAMILY AFFAIRS
+  'نكح': 'social_transaction', 'طلق': 'social_transaction', 'بيع': 'social_transaction',
+  'ورث': 'social_transaction', 'هجر': 'social_transaction', 'سير': 'social_transaction',
+  'دخل': 'social_transaction', 'خرج': 'social_transaction', 'شور': 'social_transaction',
+  'عاشر': 'social_transaction', 'رضع': 'social_transaction', 'مشي': 'social_transaction',
+  'قدم': 'social_transaction', 'سفر': 'social_transaction', 'جري': 'social_transaction',
+  'بدل': 'social_transaction', 'لقي': 'social_transaction', 'أكل': 'social_transaction',
+  'أتي': 'social_transaction', 'قبل': 'social_transaction',
+
+  // SPIRITUAL & EMOTIONAL STATES
+  'خوف': 'spiritual_states', 'رجو': 'spiritual_states', 'حبب': 'spiritual_states',
+  'حزن': 'spiritual_states', 'فرح': 'spiritual_states', 'بكي': 'spiritual_states',
+  'غضب': 'spiritual_states', 'كره': 'spiritual_states', 'طمع': 'spiritual_states',
+  'رضي': 'spiritual_states', 'خشي': 'spiritual_states', 'حسد': 'spiritual_states',
+  'وجل': 'spiritual_states', 'اطمأن': 'spiritual_states',
+
+  // CONFLICT & RESISTANCE
+  'قتل': 'conflict_resistance', 'جهد': 'conflict_resistance', 'نصر': 'conflict_resistance',
+  'غلب': 'conflict_resistance', 'فتح': 'conflict_resistance', 'ضرب': 'conflict_resistance',
+  'رمي': 'conflict_resistance', 'هزم': 'conflict_resistance', 'عدو': 'conflict_resistance',
+  'عصي': 'conflict_resistance', 'دافع': 'conflict_resistance', 'حرب': 'conflict_resistance',
+
+  // DIVINE RETRIBUTION
+  'عذب': 'divine_retribution', 'هلك': 'divine_retribution', 'لعن': 'divine_retribution',
+  'ضلل': 'divine_retribution', 'طبع': 'divine_retribution', 'جزي': 'divine_retribution',
+  'حسب': 'divine_retribution', 'اخذ': 'divine_retribution', 'أخذ': 'divine_retribution',
+  'خذل': 'divine_retribution', 'ختم': 'divine_retribution', 'سخط': 'divine_retribution',
+  'انتقم': 'divine_retribution',
+
+  // SEEKING & SUPPLICATION
+  'توب': 'seeking_supplication', 'غفر': 'seeking_supplication', 'رجع': 'seeking_supplication',
+  'عوذ': 'seeking_supplication', 'هدي': 'seeking_supplication', 'رشد': 'seeking_supplication',
+  'فزع': 'seeking_supplication', 'رغب': 'seeking_supplication', 'تضرع': 'seeking_supplication',
+  'ناجي': 'seeking_supplication', 'استغاث': 'seeking_supplication',
+  'رود': 'seeking_supplication', 'قلب': 'seeking_supplication',
+};
+
+// All recognized verb roots (Set for fast lookup)
+const VERB_ROOT_SET = new Set(Object.keys(ACTION_FAMILY_MAP));
 
 // --- Actor classification (mirrors actionEngine.ts) ---
 const DIVINE_INDICATORS = new Set(['الله', 'رب', 'رحمن', 'نحن']);
 const BELIEVER_INDICATORS = new Set(['امن', 'صلح', 'تقي', 'صبر', 'شكر', 'توب']);
 const DISBELIEVER_INDICATORS = new Set(['كفر', 'ظلم', 'فسق', 'نفق', 'شرك', 'كذب']);
 const ANGEL_INDICATORS = new Set(['ملك', 'جبريل', 'ملائكة']);
-const PROPHET_INDICATORS = new Set(['موسى', 'عيسى', 'ابراهيم', 'نوح', 'محمد', 'داود', 'سليمان', 'يوسف', 'يعقوب', 'اسماعيل', 'اسحاق', 'لوط', 'هود', 'صالح', 'شعيب', 'يونس', 'ايوب', 'ذكريا', 'يحيى', 'الياس', 'اليسع', 'ذو', 'ادم', 'هارون', 'رسول', 'نبي', 'رسل']);
+const PROPHET_INDICATORS = new Set(['موسى', 'عيسى', 'ابراهيم', 'نوح', 'محمد', 'داود', 'سليمان', 'يوسف', 'يعقوب', 'اسماعيل', 'اسحاق', 'لوط', 'هود', 'صالح', 'شعيب', 'يونس', 'ايوب', 'ذكريا', 'يحيى', 'الياس', 'اليسع', 'ادم', 'هارون', 'رسول', 'نبي', 'رسل']);
 const HYPOCRITE_INDICATORS = new Set(['نفق', 'منافق', 'منافقون', 'منافقين']);
 const SHAYTAN_INDICATORS = new Set(['شيطان', 'ابليس', 'شيط', 'شطن']);
 const MANKIND_INDICATORS = new Set(['ناس', 'انس', 'بشر', 'انسان', 'قوم', 'عالم', 'خلق']);
 
-function classifyActor(verb, verseWords) {
-  const verbIndex = verseWords.findIndex(w => w.id === verb.id);
-  const contextWindow = verseWords.slice(Math.max(0, verbIndex - 3), verbIndex);
-  for (const w of contextWindow) {
-    const text = w.text; const root = w.root;
+function classifyActor(tokenIndex, allTokensForVerse) {
+  // Look at up to 3 tokens before this one
+  const start = Math.max(0, tokenIndex - 3);
+  const context = allTokensForVerse.slice(start, tokenIndex);
+  for (const w of context) {
+    const text = stripDiacritics(w.surface);
+    const root = w.root || '';
     if (DIVINE_INDICATORS.has(text) || DIVINE_INDICATORS.has(root)) return 'divine';
     if (PROPHET_INDICATORS.has(text) || PROPHET_INDICATORS.has(root)) return 'prophet';
     if (SHAYTAN_INDICATORS.has(text) || SHAYTAN_INDICATORS.has(root)) return 'shaytan';
@@ -58,61 +150,45 @@ function classifyActor(verb, verseWords) {
     if (DISBELIEVER_INDICATORS.has(root)) return 'disbeliever';
     if (MANKIND_INDICATORS.has(text) || MANKIND_INDICATORS.has(root)) return 'mankind';
   }
-  if (DIVINE_INDICATORS.has(verb.root)) return 'divine';
+  if (DIVINE_INDICATORS.has(allTokensForVerse[tokenIndex]?.root || '')) return 'divine';
   return 'human';
 }
 
-function classifyTense(verb) {
-  const text = verb.text;
-  if (/^[يتأن]/.test(text)) return 'present';
-  if (/^[اإ]/.test(text) && text.length <= 5) return 'imperative';
+function classifyTense(surface) {
+  const s = stripDiacritics(surface);
+  if (/^[يتأن]/.test(s)) return 'present';
+  if (/^[اإ]/.test(s) && s.length <= 5) return 'imperative';
   return 'past';
 }
 
-function classifyTarget(verb, verseWords) {
-  const verbIndex = verseWords.findIndex(w => w.id === verb.id);
-  const afterWords = verseWords.slice(verbIndex + 1, verbIndex + 3);
-  for (const w of afterWords) {
-    if (w.pos === 'noun' || w.pos === 'proper_noun') {
-      const text = w.text; const root = w.root;
+function classifyTarget(tokenIndex, allTokensForVerse) {
+  const after = allTokensForVerse.slice(tokenIndex + 1, tokenIndex + 3);
+  for (const w of after) {
+    if (w.pos === 'noun') {
+      const text = stripDiacritics(w.surface);
+      const root = w.root || '';
       if (DIVINE_INDICATORS.has(text) || DIVINE_INDICATORS.has(root)) return 'divine';
       if (PROPHET_INDICATORS.has(text) || PROPHET_INDICATORS.has(root)) return 'prophet';
-      if (SHAYTAN_INDICATORS.has(text) || SHAYTAN_INDICATORS.has(root)) return 'shaytan';
-      if (ANGEL_INDICATORS.has(text) || ANGEL_INDICATORS.has(root)) return 'angel';
-      if (HYPOCRITE_INDICATORS.has(text) || HYPOCRITE_INDICATORS.has(root)) return 'hypocrite';
-      if (BELIEVER_INDICATORS.has(root)) return 'believer';
-      if (DISBELIEVER_INDICATORS.has(root)) return 'disbeliever';
       if (MANKIND_INDICATORS.has(text) || MANKIND_INDICATORS.has(root)) return 'mankind';
-      return w.root || w.text;
+      return root || text;
     }
   }
-  return undefined;
+  return null;
 }
 
-// --- Semantic cluster + polarity dictionaries (mirrors actionDictionaries.ts) ---
-const ACTION_CLUSTER_MAP = {
-  'امن': 'belief_faith', 'كفر': 'belief_faith', 'شرك': 'belief_faith', 'يقن': 'belief_faith', 'صدق': 'belief_faith', 'كذب': 'belief_faith', 'شهد': 'belief_faith', 'ءمن': 'belief_faith',
-  'علم': 'knowledge', 'فهم': 'knowledge', 'عقل': 'knowledge', 'فكر': 'knowledge', 'ذكر': 'knowledge', 'نسي': 'knowledge', 'قرأ': 'knowledge', 'كتب': 'knowledge', 'بين': 'knowledge', 'هدي': 'knowledge', 'درس': 'knowledge', 'حفظ': 'knowledge', 'تلو': 'knowledge', 'وعي': 'knowledge', 'بصر': 'knowledge',
-  'عبد': 'worship', 'صلو': 'worship', 'سجد': 'worship', 'ركع': 'worship', 'صوم': 'worship', 'زكو': 'worship', 'حجج': 'worship', 'سبح': 'worship', 'حمد': 'worship', 'شكر': 'worship', 'دعو': 'worship', 'توب': 'worship', 'نذر': 'worship', 'طهر': 'worship', 'قنت': 'worship', 'ذكر': 'worship',
-  'قول': 'speech', 'نطق': 'speech', 'كلم': 'speech', 'نبأ': 'speech', 'بشر': 'speech', 'انذر': 'speech', 'وعظ': 'speech', 'حدث': 'speech', 'سأل': 'speech', 'جوب': 'speech', 'شرح': 'speech', 'فسر': 'speech', 'بلغ': 'speech',
-  'قتل': 'conflict', 'جهد': 'conflict', 'حرب': 'conflict', 'قتل': 'conflict', 'ضرب': 'conflict', 'نصر': 'conflict', 'غلب': 'conflict', 'فتح': 'conflict', 'هزم': 'conflict', 'دفع': 'conflict', 'رمي': 'conflict', 'عدو': 'conflict', 'صبر': 'conflict',
-  'مشي': 'movement', 'سير': 'movement', 'هجر': 'movement', 'خرج': 'movement', 'دخل': 'movement', 'رجع': 'movement', 'جاء': 'movement', 'ذهب': 'movement', 'نزل': 'movement', 'صعد': 'movement', 'بعث': 'movement', 'رسل': 'movement', 'سفر': 'movement',
-  'خوف': 'emotional', 'رجو': 'emotional', 'حزن': 'emotional', 'فرح': 'emotional', 'حبب': 'emotional', 'بغض': 'emotional', 'غضب': 'emotional', 'رضي': 'emotional', 'طمع': 'emotional', 'يئس': 'emotional', 'كره': 'emotional', 'ودد': 'emotional',
-  'عذب': 'punishment_reward', 'جزي': 'punishment_reward', 'عقب': 'punishment_reward', 'ثوب': 'punishment_reward', 'حسب': 'punishment_reward', 'وزن': 'punishment_reward', 'غفر': 'punishment_reward', 'رحم': 'punishment_reward', 'لعن': 'punishment_reward', 'نعم': 'punishment_reward',
-  'عهد': 'social', 'وعد': 'social', 'بيع': 'social', 'نكح': 'social', 'طلق': 'social', 'ولد': 'social', 'ورث': 'social', 'عدل': 'social', 'حكم': 'social', 'شور': 'social', 'ءمر': 'social', 'نهي': 'social', 'وصي': 'social',
-  'خدع': 'deception', 'مكر': 'deception', 'كيد': 'deception', 'فسد': 'deception', 'ظلم': 'deception', 'بغي': 'deception', 'طغي': 'deception', 'سرف': 'deception', 'فسق': 'deception', 'نفق': 'deception',
-};
-
+// --- Polarity map ---
 const ACTION_POLARITY_MAP = {
-  'امن': 'positive', 'صدق': 'positive', 'عبد': 'positive', 'صلو': 'positive', 'سجد': 'positive',
-  'شكر': 'positive', 'توب': 'positive', 'هدي': 'positive', 'نصر': 'positive', 'غفر': 'positive',
-  'رحم': 'positive', 'حمد': 'positive', 'سبح': 'positive', 'رضي': 'positive', 'صبر': 'positive',
-  'علم': 'positive', 'فهم': 'positive', 'عقل': 'positive', 'تقو': 'positive', 'عدل': 'positive',
-  'صلح': 'positive', 'بشر': 'positive', 'فلح': 'positive', 'حفظ': 'positive',
-  'كفر': 'negative', 'ظلم': 'negative', 'فسق': 'negative', 'كذب': 'negative', 'شرك': 'negative',
-  'فسد': 'negative', 'بغي': 'negative', 'طغي': 'negative', 'قتل': 'negative', 'عذب': 'negative',
-  'لعن': 'negative', 'خدع': 'negative', 'مكر': 'negative', 'سرف': 'negative', 'ضلل': 'negative',
-  'كره': 'negative', 'غضب': 'negative', 'نفق': 'negative',
+  'امن': 'positive', 'أمن': 'positive', 'صدق': 'positive', 'عبد': 'positive',
+  'صلو': 'positive', 'سجد': 'positive', 'شكر': 'positive', 'توب': 'positive',
+  'هدي': 'positive', 'نصر': 'positive', 'غفر': 'positive', 'رحم': 'positive',
+  'حمد': 'positive', 'سبح': 'positive', 'رضي': 'positive', 'صبر': 'positive',
+  'علم': 'positive', 'فهم': 'positive', 'عقل': 'positive', 'عدل': 'positive',
+  'صلح': 'positive', 'فلح': 'positive', 'حفظ': 'positive', 'عمل': 'positive',
+  'نفع': 'positive', 'طوع': 'positive',
+  'كفر': 'negative', 'ظلم': 'negative', 'فسق': 'negative', 'كذب': 'negative',
+  'شرك': 'negative', 'فسد': 'negative', 'بغي': 'negative', 'طغي': 'negative',
+  'قتل': 'negative', 'عذب': 'negative', 'لعن': 'negative', 'هزأ': 'negative',
+  'مكر': 'negative', 'ضلل': 'negative', 'كره': 'negative', 'غضب': 'negative',
 };
 
 // --- Paginated fetch helper ---
@@ -135,98 +211,97 @@ async function fetchAll(table, columns) {
 
 // --- Main ---
 async function main() {
-  console.log('=== Seed Action Edges ===\n');
+  console.log('=== Seed Action Edges v2 (verse_tokens source) ===\n');
 
   // 1. Fetch data from Supabase
-  console.log('[1/4] Fetching data from Supabase...');
-  const [rawVerses, rawRoots, rawRootTrans] = await Promise.all([
-    fetchAll('ayamakna_verses', 'id,surah_id,ayah_number,text_arabic'),
-    fetchAll('ayamakna_root_lookups', 'word,root'),
+  console.log('[1/5] Fetching data from Supabase...');
+  const [rawTokens, rawRootTrans] = await Promise.all([
+    fetchAll('ayamakna_verse_tokens', 'id,verse_id,surface,lemma,root,pos,position'),
     fetchAll('ayamakna_root_translations', 'root,translation'),
   ]);
-  console.log(`  ${rawVerses.length} verses, ${rawRoots.length} root lookups, ${rawRootTrans.length} root translations`);
+  console.log(`  ${rawTokens.length} verse tokens, ${rawRootTrans.length} root translations`);
 
   // 2. Build lookup maps
-  console.log('[2/4] Building lookup maps...');
-  const rootLookup = new Map();
-  for (const r of rawRoots) rootLookup.set(r.word.replace(DIACRITICS, ''), r.root);
-
+  console.log('[2/5] Building lookup maps...');
   const rootTranslations = new Map();
   for (const r of rawRootTrans) rootTranslations.set(r.root, r.translation);
 
-  // Build root index (frequency counts)
-  const rootIndex = {};
+  // Group tokens by verse_id (sorted by position)
+  const tokensByVerse = new Map();
+  for (const t of rawTokens) {
+    if (!tokensByVerse.has(t.verse_id)) tokensByVerse.set(t.verse_id, []);
+    tokensByVerse.get(t.verse_id).push(t);
+  }
+  for (const tokens of tokensByVerse.values()) {
+    tokens.sort((a, b) => a.position - b.position);
+  }
 
-  // 3. Tokenize + extract actions
-  console.log('[3/4] Tokenizing and extracting action edges...');
+  // Build root frequency index
+  console.log('[3/5] Building root frequency index...');
+  const rootFreqMap = new Map();
+  for (const t of rawTokens) {
+    if (!t.root) continue;
+    rootFreqMap.set(t.root, (rootFreqMap.get(t.root) ?? 0) + 1);
+  }
+
+  // 4. Extract action edges from tokens
+  console.log('[4/5] Extracting action edges from verb tokens...');
   const allEdges = [];
+  let processedVerses = 0;
 
-  for (const v of rawVerses) {
-    const rawWords = v.text_arabic.trim().split(/\s+/).filter(Boolean);
-    const words = rawWords.map((text, i) => {
-      const clean = stripDiacritics(text);
-      const root = rootLookup.get(clean) ?? '';
-      return {
-        id: `${v.id}:${i}`,
-        verseId: v.id,
-        text,
-        root,
-        pos: classifyPOS(clean, root),
-        lemma: clean,
-      };
-    });
+  for (const [verseId, tokens] of tokensByVerse) {
+    processedVerses++;
+    if (processedVerses % 1000 === 0) process.stdout.write(`\r  Processing verse ${processedVerses}/${tokensByVerse.size}`);
 
-    // Build root index entries
-    for (const w of words) {
-      if (!w.root) continue;
-      if (!rootIndex[w.root]) rootIndex[w.root] = { root: w.root, count: 0, verseIds: [] };
-      rootIndex[w.root].count++;
-      if (!rootIndex[w.root].verseIds.includes(v.id)) rootIndex[w.root].verseIds.push(v.id);
-    }
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      // Only include tokens whose root is a recognized action verb root
+      if (!t.root || !VERB_ROOT_SET.has(t.root)) continue;
+      // Skip particles (function words)
+      if (t.pos === 'particle') continue;
 
-    // Extract verbs
-    const verbs = words.filter(w => w.pos === 'verb');
-    for (const verb of verbs) {
-      const root = verb.root || verb.text;
+      const family = ACTION_FAMILY_MAP[t.root];
       allEdges.push({
-        id: `action:${v.id}:${verb.id}`,
-        verse_id: v.id,
-        actor_type: classifyActor(verb, words),
-        action_root: root,
-        target_type: classifyTarget(verb, words) ?? null,
-        tense: classifyTense(verb),
-        verb_text: verb.text,
-        english_meaning: rootTranslations.get(root) ?? null,
-        root_frequency: null, // filled after root index is complete
-        semantic_cluster: ACTION_CLUSTER_MAP[root] ?? null,
-        polarity: ACTION_POLARITY_MAP[root] ?? 'neutral',
+        id: `action:${verseId}:${t.id}`,
+        verse_id: verseId,
+        actor_type: classifyActor(i, tokens),
+        action_root: t.root,
+        target_type: classifyTarget(i, tokens),
+        tense: classifyTense(t.surface),
+        verb_text: t.surface,
+        english_meaning: rootTranslations.get(t.root) ?? null,
+        root_frequency: rootFreqMap.get(t.root) ?? 0,
+        semantic_cluster: family,  // always non-null (guaranteed by VERB_ROOT_SET filter)
+        polarity: ACTION_POLARITY_MAP[t.root] ?? 'neutral',
       });
     }
   }
+  console.log(`\n  Extracted ${allEdges.length} action edges from ${processedVerses} verses`);
 
-  // Fill root_frequency
-  for (const edge of allEdges) {
-    edge.root_frequency = rootIndex[edge.action_root]?.count ?? 0;
+  // 5. Clear existing rows and insert new ones
+  console.log('[5/5] Clearing old rows and inserting...');
+  const { error: deleteError } = await supabase.from('ayamakna_action_edges').delete().neq('id', '___never___');
+  if (deleteError) {
+    console.error('  Delete failed:', deleteError.message);
+    console.error('  Make sure temp DELETE policy is active on ayamakna_action_edges');
+    process.exit(1);
   }
+  console.log('  Old rows cleared.');
 
-  console.log(`  Extracted ${allEdges.length} action edges from ${rawVerses.length} verses`);
-
-  // 4. Insert into Supabase in batches
-  console.log(`[4/4] Inserting ${allEdges.length} action edges...`);
   const BATCH_SIZE = 500;
   let inserted = 0;
   for (let i = 0; i < allEdges.length; i += BATCH_SIZE) {
     const batch = allEdges.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('ayamakna_action_edges').upsert(batch, { onConflict: 'id' });
+    const { error } = await supabase.from('ayamakna_action_edges').insert(batch);
     if (error) {
-      console.error(`  Error at batch ${i}-${i + batch.length}:`, error.message);
+      console.error(`  Error at batch ${i}: ${error.message}`);
       continue;
     }
     inserted += batch.length;
-    process.stdout.write(`\r  ${inserted}/${allEdges.length}`);
+    process.stdout.write(`\r  Inserted ${inserted}/${allEdges.length}`);
   }
   console.log(`\n  Done: ${inserted} rows inserted.`);
-  console.log('\n=== Seed complete! ===');
+  console.log('\n=== Re-seed ayamakna_action_verse_links next: node scripts/seed-action-verse-links.mjs ===');
 }
 
 main().catch(console.error);

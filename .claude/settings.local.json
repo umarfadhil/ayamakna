@@ -33,7 +33,9 @@
       "Bash(node scripts/gen-sql.mjs:*)",
       "Bash(node scripts/seed-id-translation.mjs:*)",
       "mcp__supabase__list_tables",
-      "Bash(node scripts/seed-linguistic-data.mjs:*)"
+      "Bash(node scripts/seed-linguistic-data.mjs:*)",
+      "Bash(node scripts/seed-concept-links.mjs:*)",
+      "Bash(node scripts/seed-contrast-verse-links.mjs:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

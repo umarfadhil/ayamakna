@@ -13,6 +13,7 @@ import type {
   VerseLink,
   VerseConcept,
   Concept,
+  ConceptDomain,
   ActionEdge,
   ActionSummary,
   RootIndex,
@@ -20,14 +21,28 @@ import type {
   RootCentrality,
   RootCentralitySummary,
 } from '@/engine/semantic/types';
-import type { SemanticCluster } from '@/engine/semantic/actionDictionaries';
 import type { GraphNode, GraphEdge, GraphRenderData } from '@/engine/visualization/types';
 
 import { stripDiacritics } from '@/engine/linguistic/rootExtractor';
 import { buildRootIndex } from '@/engine/semantic/rootEngine';
 import { computeActionSummary } from '@/engine/semantic/actionEngine';
 import { runPrecompute, loadCache, saveCache, clearCache } from '@/engine/semantic/precompute';
-import { CONTRAST_DICTIONARY } from '@/engine/semantic/contrastEngine';
+import {
+  CONTRAST_DICTIONARY,
+  CONTRAST_PAIR_HUES,
+  CONTRAST_PAIR_ORDER,
+  CONTRAST_LABEL_ENGLISH,
+  CONTRAST_ROOT_ALIASES,
+} from '@/engine/semantic/contrastEngine';
+import {
+  ACTION_FAMILY_MAP,
+  CANONICAL_ACTION_MAP,
+  ACTION_FAMILY_LABELS,
+  ACTION_FAMILY_HUES,
+  ACTION_FAMILY_INDONESIAN,
+  ACTOR_ONTOLOGY_MAP,
+  ACTOR_ONTOLOGY_HUES,
+} from '@/engine/semantic/actionDictionaries';
 import { loadDataFromSupabase } from '@/lib/dataLoader';
 import type { SurahInfo } from '@/lib/dataLoader';
 // Service A — Linguistic Core
@@ -158,11 +173,22 @@ const CONCEPT_INDONESIAN: Record<string, string> = {
 
 let _allVerses: Verse[] = [];
 let _allConcepts: Concept[] = [];
+let _allConceptDomains: ConceptDomain[] = [];
 let _allVerseConcepts: VerseConcept[] = [];
 let _rootLookup: Map<string, string> = new Map();
 let _verseLookup: Map<string, Verse> = new Map();
 let _surahLookup: Map<number, SurahInfo> = new Map();
 let _conceptByVerse: Map<string, VerseConcept[]> = new Map();
+// conceptId → ConceptDomain
+let _conceptDomainMap: Map<string, ConceptDomain> = new Map();
+// Precomputed concept verse links (from ayamakna_concept_verse_links)
+let _conceptVerseLinks: VerseLink[] = [];
+// Precomputed action verse links (from ayamakna_action_verse_links)
+let _actionVerseLinks: VerseLink[] = [];
+// Precomputed contrast verse links (from ayamakna_contrast_verse_links)
+let _contrastVerseLinks: VerseLink[] = [];
+// verseId → Set<pairId> — built from _contrastVerseLinks for fast search token lookup
+let _verseContrastPairsMap: Map<string, Set<string>> = new Map();
 let _tokenizedVerses: TokenizedVerse[] | null = null;
 let _tokenizedVerseMap: Map<string, TokenizedVerse> = new Map();
 let _semanticCache: SemanticCache | null = null;
@@ -178,6 +204,27 @@ export type RootFocusLevel = keyof typeof ROOT_FOCUS_THRESHOLDS;
 let _rootFocusLevel: RootFocusLevel = 'focused';
 export function setRootFocusLevel(level: RootFocusLevel): void { _rootFocusLevel = level; }
 export function getRootFocusLevel(): RootFocusLevel { return _rootFocusLevel; }
+
+// Concept mode focus level — controls minimum concept-Jaccard threshold for edge visibility
+const CONCEPT_FOCUS_THRESHOLDS = { broad: 0.28, focused: 0.48, deep: 0.55 } as const;
+export type ConceptFocusLevel = keyof typeof CONCEPT_FOCUS_THRESHOLDS;
+let _conceptFocusLevel: ConceptFocusLevel = 'focused';
+export function setConceptFocusLevel(level: ConceptFocusLevel): void { _conceptFocusLevel = level; }
+export function getConceptFocusLevel(): ConceptFocusLevel { return _conceptFocusLevel; }
+
+// Action mode focus level — controls minimum action-Jaccard threshold for edge visibility
+const ACTION_FOCUS_THRESHOLDS = { broad: 0.12, focused: 0.25, deep: 0.40 } as const;
+export type ActionFocusLevel = keyof typeof ACTION_FOCUS_THRESHOLDS;
+let _actionFocusLevel: ActionFocusLevel = 'focused';
+export function setActionFocusLevel(level: ActionFocusLevel): void { _actionFocusLevel = level; }
+export function getActionFocusLevel(): ActionFocusLevel { return _actionFocusLevel; }
+
+// Contrast mode focus level — controls per-verse edge cap
+const CONTRAST_CAPS = { broad: 15, focused: 8, deep: 3 } as const;
+export type ContrastFocusLevel = keyof typeof CONTRAST_CAPS;
+let _contrastFocusLevel: ContrastFocusLevel = 'focused';
+export function setContrastFocusLevel(level: ContrastFocusLevel): void { _contrastFocusLevel = level; }
+export function getContrastFocusLevel(): ContrastFocusLevel { return _contrastFocusLevel; }
 
 // --- Tokenizer ---
 
@@ -252,7 +299,20 @@ export async function initSemanticEngine(): Promise<void> {
     const data = await loadDataFromSupabase();
     _allVerses = data.verses;
     _allConcepts = data.concepts;
+    _allConceptDomains = data.conceptDomains;
     _allVerseConcepts = data.verseConcepts;
+    _conceptVerseLinks = data.conceptVerseLinks;
+    _actionVerseLinks = data.actionVerseLinks;
+    _contrastVerseLinks = data.contrastVerseLinks;
+    // Build verse → Set<pairId> index for fast search token lookup
+    _verseContrastPairsMap = new Map();
+    for (const l of _contrastVerseLinks) {
+      if (!l.pairId) continue;
+      for (const vid of [l.verseA, l.verseB]) {
+        if (!_verseContrastPairsMap.has(vid)) _verseContrastPairsMap.set(vid, new Set());
+        _verseContrastPairsMap.get(vid)!.add(l.pairId);
+      }
+    }
     _rootLookup = data.rootLookup;
     _rootTranslations = data.rootTranslations;
     _verseLookup = new Map(data.verses.map((v) => [v.id, v]));
@@ -270,6 +330,16 @@ export async function initSemanticEngine(): Promise<void> {
     for (const vc of data.verseConcepts) {
       if (!_conceptByVerse.has(vc.verseId)) _conceptByVerse.set(vc.verseId, []);
       _conceptByVerse.get(vc.verseId)!.push(vc);
+    }
+
+    // --- Build conceptId → ConceptDomain map ---
+    const domainById = new Map<string, ConceptDomain>(data.conceptDomains.map((d) => [d.id, d]));
+    _conceptDomainMap = new Map();
+    for (const c of data.concepts) {
+      if (c.domainId) {
+        const domain = domainById.get(c.domainId);
+        if (domain) _conceptDomainMap.set(c.id, domain);
+      }
     }
 
     // --- Build root → primary concept map (for semantic cluster filtering + radial layout) ---
@@ -388,57 +458,76 @@ export function getVerseSearchTokensForMode(verseId: string, mode: SemanticMode)
   }
 
   if (mode === 'concept') {
+    // Concept mode: ONLY domain names + concept names/keywords — no translation noise.
+    const tokens: string[] = [];
     const vcs = _conceptByVerse.get(verseId) ?? [];
     for (const vc of vcs) {
       const concept = _allConcepts.find((c) => c.id === vc.conceptId);
       if (concept) {
-        base.push(concept.name.toLowerCase(), concept.id.toLowerCase());
+        tokens.push(concept.name.toLowerCase(), concept.id.toLowerCase());
         const indoKw = CONCEPT_INDONESIAN[concept.id];
-        if (indoKw) base.push(...indoKw.split(' '));
-      }
-    }
-    return base;
-  }
-
-  if (mode === 'action') {
-    const cache = getSemanticCache();
-    if (cache) {
-      const actions = cache.actionEdges.filter((a) => a.verseId === verseId);
-      for (const a of actions) {
-        // Actor labels
-        const ACTOR_LABELS: Record<string, string> = {
-          divine: 'allah', human: 'human', believer: 'believer',
-          disbeliever: 'disbeliever', angel: 'angel', nature: 'nature',
-          prophet: 'prophet', hypocrite: 'hypocrite', shaytan: 'shaytan', mankind: 'mankind',
-        };
-        base.push(a.actorType.toLowerCase());
-        const label = ACTOR_LABELS[a.actorType];
-        if (label) base.push(label);
-        if (a.englishMeaning) base.push(...a.englishMeaning.toLowerCase().split(/\s+/));
-        if (a.semanticCluster) base.push(a.semanticCluster.toLowerCase().replace(/_/g, ' '));
-        if (a.targetType) base.push(String(a.targetType).toLowerCase());
-      }
-    }
-    return base;
-  }
-
-  if (mode === 'contrast') {
-    // Include contrast pair labels that this verse participates in
-    const cache = getSemanticCache();
-    if (cache) {
-      const involvedPairIds = new Set(
-        cache.contrastLinks
-          .filter((cl) => cl.verseA === verseId || cl.verseB === verseId)
-          .map((cl) => cl.pairId)
-      );
-      for (const pairId of involvedPairIds) {
-        const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === pairId);
-        if (pair) {
-          base.push(pair.labelA.toLowerCase(), pair.labelB.toLowerCase(), pair.category.toLowerCase());
+        if (indoKw) tokens.push(...indoKw.split(' '));
+        // Include domain name + id so searching "Divine Essence" highlights correctly
+        const domain = _conceptDomainMap.get(concept.id);
+        if (domain) {
+          tokens.push(domain.name.toLowerCase(), domain.id.toLowerCase());
+          // Multi-word domain: also push individual words (e.g. "divine", "essence")
+          tokens.push(...domain.name.toLowerCase().split(/\s+/));
         }
       }
     }
-    return base;
+    return tokens;
+  }
+
+  if (mode === 'action') {
+    // Action mode: ONLY action family names + canonical action names — no translation noise.
+    // This ensures "Worship" highlights verses with worship actions, not verses about worship in translation.
+    const cache = getSemanticCache();
+    const tokens: string[] = [];
+    if (cache) {
+      const actions = cache.actionEdges.filter((a) => a.verseId === verseId);
+      const seenFamilies = new Set<string>();
+      for (const a of actions) {
+        // Canonical action name (e.g. "Pray", "Create", "Be Patient")
+        const canonical = a.canonicalAction ?? CANONICAL_ACTION_MAP[a.actionRoot];
+        if (canonical) tokens.push(...canonical.toLowerCase().split(/[\s/]+/));
+        // Action family name + individual words (e.g. "worship", "devotion")
+        const family = a.semanticCluster ?? ACTION_FAMILY_MAP[a.actionRoot];
+        if (family && !seenFamilies.has(family)) {
+          seenFamilies.add(family);
+          const label = ACTION_FAMILY_LABELS[family];
+          if (label) {
+            tokens.push(label.toLowerCase(), family.toLowerCase().replace(/_/g, ' '));
+            tokens.push(...label.toLowerCase().split(/\s+/));
+          }
+          const indo = ACTION_FAMILY_INDONESIAN[family];
+          if (indo) tokens.push(...indo.split(' '));
+        }
+      }
+    }
+    return tokens;
+  }
+
+  if (mode === 'contrast') {
+    // Contrast mode: ONLY contrast pair labels + English expansions — no translation noise.
+    // This ensures "Light" highlights nur-pair verses, "Faith" highlights iman-pair verses.
+    const tokens: string[] = [];
+    const pairIds = _verseContrastPairsMap.get(verseId);
+    if (pairIds) {
+      for (const pairId of pairIds) {
+        const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === pairId);
+        if (pair) {
+          // Transliteration labels (e.g. "nur", "zulumat", "iman", "kufr") + category
+          tokens.push(pair.labelA.toLowerCase(), pair.labelB.toLowerCase(), pair.category.toLowerCase());
+          // English keyword expansions from CONTRAST_LABEL_ENGLISH
+          const kwA = CONTRAST_LABEL_ENGLISH[pair.labelA];
+          if (kwA) tokens.push(...kwA.split(' '));
+          const kwB = CONTRAST_LABEL_ENGLISH[pair.labelB];
+          if (kwB) tokens.push(...kwB.split(' '));
+        }
+      }
+    }
+    return tokens;
   }
 
   return base;
@@ -512,6 +601,30 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
     }
   }
 
+  // In concept mode: compute per-node sum of shared concepts across all concept edges
+  const nodeSharedConcepts = new Map<string, number>();
+  if (mode === 'concept') {
+    for (const e of edges) {
+      const src = typeof e.source === 'string' ? e.source : e.source.id;
+      const tgt = typeof e.target === 'string' ? e.target : e.target.id;
+      const count = e.sharedConceptsCount ?? 1;
+      nodeSharedConcepts.set(src, (nodeSharedConcepts.get(src) ?? 0) + count);
+      nodeSharedConcepts.set(tgt, (nodeSharedConcepts.get(tgt) ?? 0) + count);
+    }
+  }
+
+  // In action mode: compute per-node behavioral centrality (sum of sharedActionsCount)
+  const nodeSharedActions = new Map<string, number>();
+  if (mode === 'action') {
+    for (const e of edges) {
+      const src = typeof e.source === 'string' ? e.source : e.source.id;
+      const tgt = typeof e.target === 'string' ? e.target : e.target.id;
+      const count = e.sharedActionsCount ?? 1;
+      nodeSharedActions.set(src, (nodeSharedActions.get(src) ?? 0) + count);
+      nodeSharedActions.set(tgt, (nodeSharedActions.get(tgt) ?? 0) + count);
+    }
+  }
+
   const nodes: GraphNode[] = [];
   for (const id of connectedIds) {
     const verse = _verseLookup.get(id);
@@ -542,6 +655,96 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
       semanticCluster = _rootConceptMap.get(maxRoot); // concept ID for radial positioning
     }
 
+    // In concept mode: resolve domain data for the verse's primary concept
+    let domainId: string | undefined;
+    let domainColorHue: number | undefined;
+    let domainOrder: number | undefined;
+    if (mode === 'concept') {
+      const vcs = _conceptByVerse.get(id);
+      if (vcs && vcs.length > 0) {
+        let best = vcs[0];
+        for (const c of vcs) { if (c.weight > best.weight) best = c; }
+        const conceptMeta = _allConcepts.find((c) => c.id === best.conceptId);
+        const domain = _conceptDomainMap.get(best.conceptId);
+        if (domain) {
+          domainId = domain.id;
+          domainColorHue = domain.colorHue;
+          domainOrder = conceptMeta?.domainOrder ?? 1;
+          semanticCluster = domain.id; // radial layout keyed by domain
+        }
+      }
+    }
+
+    // In contrast mode: resolve primary pair, side, hue, and root frequency for bipartite layout
+    let contrastSide: 'A' | 'B' | undefined;
+    let contrastHue: number | undefined;
+    let contrastPairIdx: number | undefined;
+    let contrastRootFreq: number | undefined;
+    let contrastPairId: string | undefined;
+    if (mode === 'contrast') {
+      const verseLinks = _contrastVerseLinks.length > 0 ? _contrastVerseLinks : [];
+      // Count links per pair involving this verse to find primary pair
+      const pairCounts = new Map<string, number>();
+      for (const l of verseLinks) {
+        if ((l.verseA === id || l.verseB === id) && l.pairId) {
+          pairCounts.set(l.pairId, (pairCounts.get(l.pairId) ?? 0) + 1);
+        }
+      }
+      let topPair = ''; let topCount = 0;
+      for (const [pid, cnt] of pairCounts) { if (cnt > topCount) { topPair = pid; topCount = cnt; } }
+      if (topPair) {
+        contrastPairId = topPair;
+        // Determine side: if this verse is verseA in any link of this pair → side A, else side B
+        const isA = verseLinks.some((l) => l.pairId === topPair && l.verseA === id);
+        contrastSide = isA ? 'A' : 'B';
+        const hues = CONTRAST_PAIR_HUES[topPair];
+        contrastHue = hues ? (isA ? hues.hueA : hues.hueB) : undefined;
+        contrastPairIdx = CONTRAST_PAIR_ORDER.indexOf(topPair);
+        // Root frequency: total token occurrences of this verse's primary contrast root
+        const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === topPair);
+        if (pair) {
+          const rawRoot = isA ? pair.rootA : pair.rootB;
+          const root = CONTRAST_ROOT_ALIASES[rawRoot] ?? rawRoot;
+          contrastRootFreq = cache.rootIndex[root]?.count;
+        }
+        // semanticCluster for bipartite radial layout
+        semanticCluster = `${topPair}:${contrastSide}`;
+      }
+    }
+
+    // In action mode: resolve dominant action family + dominant actor ontology
+    let actionFamilyId: string | undefined;
+    let actionFamilyHue: number | undefined;
+    let actorOntology: string | undefined;
+    let actorOntologyHue: number | undefined;
+    if (mode === 'action') {
+      const dominantFamily = getPrimaryCluster(id, 'action', cache);
+      if (dominantFamily !== 'unknown') {
+        actionFamilyId = dominantFamily;
+        actionFamilyHue = ACTION_FAMILY_HUES[dominantFamily as keyof typeof ACTION_FAMILY_HUES];
+        semanticCluster = dominantFamily; // radial layout keyed by action family
+      } else {
+        // Skip verses with no valid action family — isolate them from the connected graph
+        continue;
+      }
+      // Dominant actor ontology: find most frequent actor across verse's action edges
+      const verseActions = cache.actionEdges.filter((a) => a.verseId === id);
+      if (verseActions.length > 0) {
+        const ontologyCounts = new Map<string, number>();
+        for (const a of verseActions) {
+          const ont = ACTOR_ONTOLOGY_MAP[a.actorType] ?? 'human';
+          ontologyCounts.set(ont, (ontologyCounts.get(ont) ?? 0) + 1);
+        }
+        let maxOnt = 'human';
+        let maxCount = 0;
+        for (const [ont, cnt] of ontologyCounts) {
+          if (cnt > maxCount) { maxOnt = ont; maxCount = cnt; }
+        }
+        actorOntology = maxOnt;
+        actorOntologyHue = ACTOR_ONTOLOGY_HUES[maxOnt as keyof typeof ACTOR_ONTOLOGY_HUES];
+      }
+    }
+
     nodes.push({
       id: verse.id,
       label: `${surah?.name ?? verse.surahId}:${verse.ayahNumber}`,
@@ -556,10 +759,36 @@ export function buildGraphData(mode: SemanticMode): GraphRenderData {
       sharedRootsCount: nodeSharedRoots.get(id),
       rootVerseFrequency,
       semanticCluster,
+      sharedConceptsCount: nodeSharedConcepts.get(id),
+      domainId,
+      domainColorHue,
+      domainOrder,
+      sharedActionsCount: nodeSharedActions.get(id),
+      actionFamilyId,
+      actionFamilyHue,
+      actorOntology,
+      actorOntologyHue,
+      contrastSide,
+      contrastHue,
+      contrastPairIdx,
+      contrastRootFreq,
+      contrastPairId,
     });
   }
 
-  return { nodes, edges };
+  // In action mode: filter out edges that reference nodes skipped due to no valid action family
+  const finalEdges = mode === 'action'
+    ? (() => {
+        const nodeIdSet = new Set(nodes.map((n) => n.id));
+        return edges.filter((e) => {
+          const src = typeof e.source === 'string' ? e.source : e.source.id;
+          const tgt = typeof e.target === 'string' ? e.target : e.target.id;
+          return nodeIdSet.has(src) && nodeIdSet.has(tgt);
+        });
+      })()
+    : edges;
+
+  return { nodes, edges: finalEdges };
 }
 
 function getPrimaryCluster(
@@ -582,16 +811,25 @@ function getPrimaryCluster(
       return maxRoot || 'unknown';
     }
     case 'concept': {
-      const concepts = _conceptByVerse.get(verseId);
-      if (!concepts || concepts.length === 0) return 'unknown';
-      let best = concepts[0];
-      for (const c of concepts) { if (c.weight > best.weight) best = c; }
-      return best.conceptId;
+      const vcs = _conceptByVerse.get(verseId);
+      if (!vcs || vcs.length === 0) return 'unknown';
+      let best = vcs[0];
+      for (const c of vcs) { if (c.weight > best.weight) best = c; }
+      // Return domain_id for radial layout (groups by domain), fall back to concept id
+      return _conceptDomainMap.get(best.conceptId)?.id ?? best.conceptId;
     }
     case 'action': {
       const actions = cache.actionEdges.filter((a) => a.verseId === verseId);
       if (actions.length === 0) return 'unknown';
-      return actions[0].actorType;
+      // Return dominant action family (most frequent among verse's actions)
+      const familyCounts = new Map<string, number>();
+      for (const a of actions) {
+        const fam = a.semanticCluster ?? ACTION_FAMILY_MAP[a.actionRoot];
+        if (fam) familyCounts.set(fam, (familyCounts.get(fam) ?? 0) + 1);
+      }
+      let topFamily = 'unknown'; let topCount = 0;
+      for (const [fam, cnt] of familyCounts) if (cnt > topCount) { topFamily = fam; topCount = cnt; }
+      return topFamily;
     }
     case 'contrast': {
       const hasContrast = cache.contrastLinks.some(
@@ -642,15 +880,69 @@ function getEdgesForMode(mode: SemanticMode, cache: SemanticCache): GraphEdge[] 
       links = [...survivingLinks];
       break;
     }
-    case 'concept':
-      links = cache.verseLinks.filter((l) => l.linkType === 'concept');
+    case 'concept': {
+      const minSim = CONCEPT_FOCUS_THRESHOLDS[_conceptFocusLevel];
+      // Use preloaded concept verse links when available; fall back to cached similarity links
+      const base = _conceptVerseLinks.length > 0
+        ? _conceptVerseLinks
+        : cache.verseLinks.filter((l) => l.linkType === 'concept');
+      // Per-node edge cap: top 10 edges per node (union survival rule)
+      const CONCEPT_NODE_CAP = 10;
+      const filtered = base.filter((l) => l.similarityScore >= minSim);
+      const byNode = new Map<string, VerseLink[]>();
+      for (const l of filtered) {
+        for (const nodeId of [l.verseA, l.verseB]) {
+          if (!byNode.has(nodeId)) byNode.set(nodeId, []);
+          byNode.get(nodeId)!.push(l);
+        }
+      }
+      for (const list of byNode.values()) list.sort((a, b) => b.similarityScore - a.similarityScore);
+      const surviving = new Set<VerseLink>();
+      for (const [, list] of byNode) for (const l of list.slice(0, CONCEPT_NODE_CAP)) surviving.add(l);
+      links = [...surviving];
       break;
-    case 'action':
-      links = cache.verseLinks.filter((l) => l.linkType === 'action');
+    }
+    case 'action': {
+      // Use preloaded action verse links when available (seeded); fall back to cached action links
+      const minSim = ACTION_FOCUS_THRESHOLDS[_actionFocusLevel];
+      const base = _actionVerseLinks.length > 0
+        ? _actionVerseLinks
+        : cache.verseLinks.filter((l) => l.linkType === 'action');
+      const ACTION_NODE_CAP = 10;
+      const filtered = base.filter((l) => l.similarityScore >= minSim);
+      const byNode = new Map<string, VerseLink[]>();
+      for (const l of filtered) {
+        for (const nodeId of [l.verseA, l.verseB]) {
+          if (!byNode.has(nodeId)) byNode.set(nodeId, []);
+          byNode.get(nodeId)!.push(l);
+        }
+      }
+      for (const list of byNode.values()) list.sort((a, b) => b.similarityScore - a.similarityScore);
+      const surviving = new Set<VerseLink>();
+      for (const [, list] of byNode) for (const l of list.slice(0, ACTION_NODE_CAP)) surviving.add(l);
+      links = [...surviving];
       break;
-    case 'contrast':
-      links = cache.verseLinks.filter((l) => l.linkType === 'contrast');
+    }
+    case 'contrast': {
+      // Use preloaded contrast verse links when available; fall back to cached contrast links.
+      // Apply per-verse edge cap (union survival rule) per focus level.
+      const cap = CONTRAST_CAPS[_contrastFocusLevel];
+      const base = _contrastVerseLinks.length > 0
+        ? _contrastVerseLinks
+        : cache.verseLinks.filter((l) => l.linkType === 'contrast');
+      const byNode = new Map<string, VerseLink[]>();
+      for (const l of base) {
+        for (const nodeId of [l.verseA, l.verseB]) {
+          if (!byNode.has(nodeId)) byNode.set(nodeId, []);
+          byNode.get(nodeId)!.push(l);
+        }
+      }
+      for (const list of byNode.values()) list.sort((a, b) => b.similarityScore - a.similarityScore);
+      const contrastSurviving = new Set<VerseLink>();
+      for (const [, list] of byNode) for (const l of list.slice(0, cap)) contrastSurviving.add(l);
+      links = [...contrastSurviving];
       break;
+    }
     case 'similarity':
       links = cache.verseLinks;
       break;
@@ -665,6 +957,8 @@ function getEdgesForMode(mode: SemanticMode, cache: SemanticCache): GraphEdge[] 
     strength: l.similarityScore,
     sharedRootsCount: l.sharedRootsCount,
     hopCount: l.hopCount,
+    sharedConceptsCount: l.sharedConceptsCount,
+    sharedActionsCount: l.sharedActionsCount,
   }));
 }
 
@@ -688,6 +982,33 @@ export function getVerseActions(verseId: string): ActionEdge[] {
   const cache = getSemanticCache();
   if (!cache) return [];
   return cache.actionEdges.filter((a) => a.verseId === verseId);
+}
+
+/** Number of unique verses in the corpus that contain a given action root. */
+export function getActionRootVerseCount(root: string): number {
+  const cache = getSemanticCache();
+  if (!cache) return 0;
+  const verseIds = new Set(cache.actionEdges.filter((a) => a.actionRoot === root).map((a) => a.verseId));
+  return verseIds.size;
+}
+
+/** Set of verse IDs in the corpus that contain a given action root (for graph highlight). */
+export function getActionRootVerseIds(root: string): Set<string> {
+  const cache = getSemanticCache();
+  if (!cache) return new Set();
+  return new Set(cache.actionEdges.filter((a) => a.actionRoot === root).map((a) => a.verseId));
+}
+
+/** Number of unique verses in the corpus that contain any action in a given action family. */
+export function getActionFamilyVerseCount(family: string): number {
+  const cache = getSemanticCache();
+  if (!cache) return 0;
+  const verseIds = new Set(
+    cache.actionEdges
+      .filter((a) => (a.semanticCluster ?? ACTION_FAMILY_MAP[a.actionRoot]) === family)
+      .map((a) => a.verseId)
+  );
+  return verseIds.size;
 }
 
 export function getRootIndex(): RootIndex {
@@ -823,19 +1144,76 @@ export function getAllVerses(): Verse[] {
   return _allVerses;
 }
 
-/** Returns contrast pairs that involve the given verse, with partner verse IDs. */
-export function getVerseContrastLinks(verseId: string): Array<{
-  pairId: string; partnerVerseId: string; score: number;
-}> {
+// --- Concept Domain Exports ---
+
+/** All 9 concept domains, sorted by display order. */
+export function getConceptDomains(): ConceptDomain[] {
+  return [..._allConceptDomains].sort((a, b) => a.displayOrder - b.displayOrder);
+}
+
+/** Returns the domain for a given concept ID, or undefined if not mapped. */
+export function getDomainForConcept(conceptId: string): ConceptDomain | undefined {
+  return _conceptDomainMap.get(conceptId);
+}
+
+/** Returns the primary domain_id for a verse (based on highest-weight concept). */
+export function getPrimaryDomainForVerse(verseId: string): string | undefined {
+  const vcs = _conceptByVerse.get(verseId);
+  if (!vcs || vcs.length === 0) return undefined;
+  let best = vcs[0];
+  for (const c of vcs) { if (c.weight > best.weight) best = c; }
+  return _conceptDomainMap.get(best.conceptId)?.id;
+}
+
+/**
+ * Corpus-level frequency statistics for a contrast pair.
+ * freqA/freqB = total token occurrences in the Quran for rootA/rootB.
+ * Applies CONTRAST_ROOT_ALIASES to resolve DB root names (e.g. ءمن→أمن, نار→نور).
+ * Used for Frequency Asymmetry bars in the Contrast Intelligence panel.
+ */
+export function getContrastTopicStats(pairId: string): {
+  freqA: number; freqB: number; ratio: number; dominantSide: 'A' | 'B'; dominanceGap: number;
+} | null {
   const cache = getSemanticCache();
-  if (!cache) return [];
-  return cache.contrastLinks
-    .filter((cl) => cl.verseA === verseId || cl.verseB === verseId)
-    .map((cl) => ({
-      pairId: cl.pairId,
-      partnerVerseId: cl.verseA === verseId ? cl.verseB : cl.verseA,
-      score: 0.8,
-    }));
+  if (!cache) return null;
+  const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === pairId);
+  if (!pair) return null;
+  const resolvedA = CONTRAST_ROOT_ALIASES[pair.rootA] ?? pair.rootA;
+  const resolvedB = CONTRAST_ROOT_ALIASES[pair.rootB] ?? pair.rootB;
+  const freqA = cache.rootIndex[resolvedA]?.count ?? 0;
+  const freqB = cache.rootIndex[resolvedB]?.count ?? 0;
+  if (freqA === 0 && freqB === 0) return null;
+  const dominantSide: 'A' | 'B' = freqA >= freqB ? 'A' : 'B';
+  const dominanceGap = Math.abs(freqA - freqB);
+  const ratio = freqB > 0 ? freqA / freqB : freqA;
+  return { freqA, freqB, ratio, dominantSide, dominanceGap };
+}
+
+/** Returns contrast pairs that involve the given verse, with partner verse IDs, side, and topic stats. */
+export function getVerseContrastLinks(verseId: string): Array<{
+  pairId: string;
+  category: string;
+  partnerVerseId: string;
+  score: number;
+  thisSide: 'A' | 'B';
+  topicStats: ReturnType<typeof getContrastTopicStats>;
+}> {
+  // Prefer preloaded Supabase links (has pairId + category); fall back to cached links
+  const base = _contrastVerseLinks.length > 0 ? _contrastVerseLinks : [];
+  return base
+    .filter((l) => l.verseA === verseId || l.verseB === verseId)
+    .slice(0, 20) // cap to avoid flooding VerseDetail
+    .map((l) => {
+      const thisSide: 'A' | 'B' = l.verseA === verseId ? 'A' : 'B';
+      return {
+        pairId: l.pairId ?? '',
+        category: l.contrastCategory ?? '',
+        partnerVerseId: l.verseA === verseId ? l.verseB : l.verseA,
+        score: l.similarityScore,
+        thisSide,
+        topicStats: l.pairId ? getContrastTopicStats(l.pairId) : null,
+      };
+    });
 }
 
 /** Returns top-N most similar verses to the given verse. */

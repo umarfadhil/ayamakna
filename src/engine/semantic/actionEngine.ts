@@ -7,10 +7,12 @@
 
 import type { Word, TokenizedVerse } from '../linguistic/types';
 import type { ActionEdge, ActorType, Tense, VerseLink, ActionSummary, RootIndex } from './types';
-import type { SemanticCluster, ActionPolarity } from './actionDictionaries';
+import type { ActionFamily, ActionPolarity, ActorOntology } from './actionDictionaries';
 import {
-  ACTION_CLUSTER_MAP,
+  ACTION_FAMILY_MAP,
+  CANONICAL_ACTION_MAP,
   ACTION_POLARITY_MAP,
+  ACTOR_ONTOLOGY_MAP,
   PROPHET_INDICATORS,
   HYPOCRITE_INDICATORS,
   SHAYTAN_INDICATORS,
@@ -150,7 +152,8 @@ export function extractActions(
       verbText: verb.text,
       englishMeaning: rootTranslations.get(root) ?? '',
       rootFrequency: rootIndex[root]?.count ?? 0,
-      semanticCluster: ACTION_CLUSTER_MAP[root],
+      semanticCluster: ACTION_FAMILY_MAP[root],
+      canonicalAction: CANONICAL_ACTION_MAP[root],
       polarity: ACTION_POLARITY_MAP[root] ?? 'neutral',
     });
   }
@@ -228,15 +231,16 @@ export function computeActionSummary(actions: ActionEdge[]): ActionSummary | nul
 
   const actorCounts = new Map<ActorType, number>();
   const rootCounts = new Map<string, number>();
-  const clusterCounts = new Map<SemanticCluster, number>();
+  const clusterCounts = new Map<ActionFamily, number>();
   const tenseDistribution: Record<Tense, number> = { past: 0, present: 0, future: 0, imperative: 0 };
   const polarityCounts = { positive: 0, negative: 0, neutral: 0 };
 
   for (const a of actions) {
     actorCounts.set(a.actorType, (actorCounts.get(a.actorType) ?? 0) + 1);
     rootCounts.set(a.actionRoot, (rootCounts.get(a.actionRoot) ?? 0) + 1);
-    if (a.semanticCluster) {
-      clusterCounts.set(a.semanticCluster, (clusterCounts.get(a.semanticCluster) ?? 0) + 1);
+    const cluster = a.semanticCluster ?? ACTION_FAMILY_MAP[a.actionRoot];
+    if (cluster) {
+      clusterCounts.set(cluster, (clusterCounts.get(cluster) ?? 0) + 1);
     }
     tenseDistribution[a.tense]++;
     polarityCounts[a.polarity]++;
@@ -258,7 +262,7 @@ export function computeActionSummary(actions: ActionEdge[]): ActionSummary | nul
   // Get English meaning for the most frequent root
   const mostFrequentRootMeaning = actions.find((a) => a.actionRoot === mostFrequentRoot)?.englishMeaning ?? '';
 
-  let dominantCluster: SemanticCluster | undefined;
+  let dominantCluster: ActionFamily | undefined;
   let dominantClusterCount = 0;
   for (const [cluster, count] of clusterCounts) {
     if (count > dominantClusterCount) { dominantCluster = cluster; dominantClusterCount = count; }
@@ -271,8 +275,25 @@ export function computeActionSummary(actions: ActionEdge[]): ActionSummary | nul
         ? 'negative'
         : 'neutral';
 
+  // Derive top-level actor ontology from dominant actor type
+  const dominantActorOntology: ActorOntology = ACTOR_ONTOLOGY_MAP[dominantActor] ?? 'human';
+
+  // Derive temporal mode from tense distribution
+  const totalTense = tenseDistribution.past + tenseDistribution.present
+    + tenseDistribution.future + tenseDistribution.imperative;
+  let temporalMode = 'Mixed';
+  if (totalTense > 0) {
+    const imperativePct = tenseDistribution.imperative / totalTense;
+    const futurePct = tenseDistribution.future / totalTense;
+    if (imperativePct > 0.30) temporalMode = 'Command dominant';
+    else if (futurePct > 0.15) temporalMode = 'Eschatological';
+    else if (tenseDistribution.present > tenseDistribution.past) temporalMode = 'Present dominant';
+    else if (tenseDistribution.past > tenseDistribution.present) temporalMode = 'Past dominant';
+  }
+
   return {
     dominantActor,
+    dominantActorOntology,
     dominantActorCount,
     mostFrequentRoot,
     mostFrequentRootMeaning,
@@ -280,6 +301,7 @@ export function computeActionSummary(actions: ActionEdge[]): ActionSummary | nul
     dominantCluster,
     dominantClusterCount,
     tenseDistribution,
+    temporalMode,
     polaritySummary: polarityCounts,
     dominantPolarity,
     totalActions: actions.length,

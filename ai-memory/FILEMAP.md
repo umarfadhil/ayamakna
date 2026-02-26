@@ -34,6 +34,7 @@
 
 ## Scripts
 20. `scripts/generate-corpus.mjs` — Node.js script: fetches Quran text + morphology + generates TS data files
+26. `scripts/seed-concept-links.mjs` — [PLANNED] Seeds `ayamakna_concept_verse_links` (pure concept Jaccard pairs). Requires temp INSERT+DELETE policies.
 21. `scripts/seed-supabase.mjs` — Seeds all data from TS files into Supabase tables
 22. `scripts/seed-id-translation.mjs` — Seeds Indonesian (Kemenag) translations from alqurancloud into `ayamakna_verses.text_translation_id` (run once; requires temp UPDATE policy)
 23. `scripts/seed-action-edges.mjs` — Seeds precomputed action edges into `ayamakna_action_edges` (run once; requires temp INSERT policy)

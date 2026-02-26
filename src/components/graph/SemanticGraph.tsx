@@ -4,6 +4,9 @@ import type { GraphNode, GraphEdge, GraphRenderData } from '@/engine/visualizati
 import type { LinkType, SemanticMode } from '@/engine/semantic/types';
 import { LINK_COLORS } from '@/engine/visualization/types';
 import { getRootTranslation } from '@/store/semanticStore';
+import { ACTION_FAMILY_LABELS } from '@/engine/semantic/actionDictionaries';
+import type { ActionFamily } from '@/engine/semantic/actionDictionaries';
+import { CONTRAST_PAIR_ORDER, CONTRAST_DICTIONARY } from '@/engine/semantic/contrastEngine';
 
 interface D3Node extends GraphNode {
   x?: number;
@@ -21,6 +24,8 @@ interface D3Edge {
   strength: number;
   sharedRootsCount?: number;
   hopCount?: number;
+  sharedConceptsCount?: number;
+  sameDomain?: boolean;
 }
 
 interface SemanticGraphProps {
@@ -123,6 +128,47 @@ function getRootFrequencyColor(verseFreq?: number): string {
   return 'hsla(22, 65%, 42%, 1)';                          // brown/orange — rare root
 }
 
+/**
+ * Concept mode: domain-based node color.
+ * Same domain shares the hue family; domainOrder drives lightness gradient
+ * so different concepts within a domain are visually distinguishable.
+ * domainOrder=1 → darkest (most central), higher order → progressively lighter.
+ */
+function getDomainConceptColor(colorHue?: number, domainOrder?: number): string {
+  if (colorHue == null) return CLUSTER_COLORS.unknown;
+  const order = domainOrder ?? 1;
+  const lightness = Math.min(35 + (order - 1) * 8, 67); // 35% → 67%
+  const saturation = Math.max(75 - (order - 1) * 8, 42); // 75% → 42%
+  return `hsla(${colorHue}, ${saturation}%, ${lightness}%, 1)`;
+}
+
+/**
+ * Action mode: action-family-based node color.
+ * All nodes in the same family share the same hue; sharedActionsCount drives
+ * saturation/lightness gradations within the family (more behaviorally central = more vivid).
+ */
+function getActionFamilyNodeColor(actionFamilyHue?: number, sharedActionsCount?: number): string {
+  if (actionFamilyHue == null) return CLUSTER_COLORS.unknown;
+  const activity = Math.min((sharedActionsCount ?? 0) / 25, 1); // 0→1
+  const saturation = Math.round(50 + activity * 28); // 50% → 78%
+  const lightness = Math.round(42 - activity * 10);  // 42% → 32%
+  return `hsla(${actionFamilyHue}, ${saturation}%, ${lightness}%, 1)`;
+}
+
+/**
+ * Contrast mode: pair-side-based node color.
+ * hue comes from CONTRAST_PAIR_HUES (hueA or hueB per side).
+ * contrastRootFreq drives saturation/lightness — higher corpus frequency → more vivid.
+ */
+function getContrastNodeColor(hue?: number, rootFreq?: number): string {
+  if (hue == null) return CLUSTER_COLORS.neutral;
+  const freq = rootFreq ?? 0;
+  const activity = Math.min(freq / 300, 1); // 0→1
+  const saturation = Math.round(55 + activity * 25); // 55% → 80%
+  const lightness = Math.round(45 - activity * 8);   // 45% → 37%
+  return `hsla(${hue}, ${saturation}%, ${lightness}%, 1)`;
+}
+
 const SemanticGraph: React.FC<SemanticGraphProps> = ({
   data,
   searchQuery,
@@ -156,6 +202,25 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
       }
       return 4;
     }
+    // Concept mode: size by structural importance (total shared concepts across edges)
+    if (mode === 'concept') {
+      if (node.sharedConceptsCount != null && node.sharedConceptsCount > 0) {
+        return 4 + Math.min(node.sharedConceptsCount / 30, 1) * 18;
+      }
+      return 4;
+    }
+    // Action mode: behavioral centrality (total shared actions = behavioral reach)
+    if (mode === 'action') {
+      if (node.sharedActionsCount != null && node.sharedActionsCount > 0) {
+        return 4 + Math.min(node.sharedActionsCount / 25, 1) * 18;
+      }
+      return 4;
+    }
+    // Contrast mode: structural strength (corpus root frequency × edge density)
+    if (mode === 'contrast') {
+      const freq = node.contrastRootFreq ?? 0;
+      return 4 + Math.min(freq / 300, 1) * 16;
+    }
     return 6 + node.weight * 14;
   }, [mode]);
 
@@ -164,7 +229,8 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
     // Multi-word AND logic: every word in the query must match at least one token
-    const words = q.split(/\s+/).filter(Boolean);
+    // Filter out non-alphanumeric tokens (e.g. "&") so "Worship & Devotion" works correctly
+    const words = q.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
     return words.every((word) => (
       node.label.toLowerCase().includes(word) ||
       (node.labelAr?.toLowerCase().includes(word) ?? false) ||
@@ -216,11 +282,11 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     nodesRef.current = nodes;
     edgesRef.current = edges;
 
-    // --- Root mode: compute radial cluster positions ---
+    // --- Radial cluster positions (root mode + concept mode + action mode + contrast mode) ---
     // Groups nodes by semanticCluster and arranges each cluster at an angular position.
     const RADIAL_RADIUS = 320;
     let clusterAngleMap: Map<string, number> | null = null;
-    if (mode === 'root') {
+    if (mode === 'root' || mode === 'concept' || mode === 'action') {
       const clusters = [...new Set(
         nodes
           .filter((n) => !isolatedIdSet.has(n.id) && n.semanticCluster)
@@ -230,6 +296,31 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
         clusters.map((c, i) => [c, (i / Math.max(clusters.length, 1)) * 2 * Math.PI])
       );
     }
+    // Contrast mode: bipartite radial layout — A-side on left hemisphere, B-side on right.
+    // Each pair index maps to the same vertical position on each side, so opposing verses
+    // are diametrically across the graph (maximum visual separation).
+    if (mode === 'contrast') {
+      clusterAngleMap = new Map();
+      const N = CONTRAST_PAIR_ORDER.length; // 17
+      for (const node of nodes) {
+        if (!node.semanticCluster) continue;
+        const cluster = node.semanticCluster; // format: "pairId:A" or "pairId:B"
+        if (clusterAngleMap.has(cluster)) continue;
+        const lastColon = cluster.lastIndexOf(':');
+        if (lastColon === -1) continue;
+        const side = cluster.slice(lastColon + 1);
+        const pairId = cluster.slice(0, lastColon);
+        const idx = CONTRAST_PAIR_ORDER.indexOf(pairId);
+        if (idx === -1) continue;
+        const t = idx / Math.max(N - 1, 1); // 0 → 1
+        // A-side: left hemisphere π/2 → 3π/2 (top-left to bottom-left)
+        // B-side: -π/2 → π/2 (top-right to bottom-right, i.e. diametrically opposite)
+        const angle = side === 'A'
+          ? Math.PI / 2 + t * Math.PI
+          : -Math.PI / 2 + t * Math.PI;
+        clusterAngleMap.set(cluster, angle);
+      }
+    }
 
     const sim = d3.forceSimulation<D3Node>(nodes)
       .force(
@@ -237,16 +328,30 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
         d3.forceLink<D3Node, D3Edge>(edges)
           .id((d) => d.id)
           // Edge distance = similarity-based: high similarity → shorter spring → closer nodes.
-          // Max capped at 120 (was 200) so even low-similarity edges keep nodes within visible range.
           .distance((d) => {
             if (mode === 'root') {
               const sim = d.strength;
               return sim > 0 ? Math.max(35, 120 * (1 - sim * 0.85)) : 130;
             }
+            if (mode === 'concept') {
+              // Semantic gravity: strong concept overlap → pulled close
+              return Math.max(40, 220 * (1 - d.strength * 0.85));
+            }
+            if (mode === 'action') {
+              // Behavioral gravity: strong action overlap → pulled close
+              return Math.max(40, 220 * (1 - d.strength * 0.85));
+            }
+            if (mode === 'contrast') {
+              // Tense opposition: high contrast strength → moderate spring that stretches across poles
+              return Math.max(180, 400 * (1 - d.strength * 0.5));
+            }
             return 100;
           })
           .strength((d) => {
             if (mode === 'root') return Math.max(0.15, d.strength * 0.55);
+            if (mode === 'concept') return Math.max(0.12, d.strength * 0.45);
+            if (mode === 'action') return Math.max(0.12, d.strength * 0.45);
+            if (mode === 'contrast') return Math.max(0.08, d.strength * 0.30);
             return d.strength * 0.3;
           })
       )
@@ -263,10 +368,13 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
         }
       });
 
-    // Root mode: add gentle radial cluster force (Hybrid Force-Directed + Radial)
-    // Pulls nodes toward their concept cluster's angular position on a ring
-    if (mode === 'root' && clusterAngleMap) {
+    // Root + Concept + Action + Contrast mode: add gentle radial cluster force (Hybrid Force-Directed + Radial)
+    // Root mode: pulls by concept cluster. Concept mode: by domain. Action: by action family.
+    // Contrast mode: bipartite pull — A-side to left hemisphere, B-side to right hemisphere.
+    if ((mode === 'root' || mode === 'concept' || mode === 'action' || mode === 'contrast') && clusterAngleMap) {
       const _clusterAngleMap = clusterAngleMap; // closure capture
+      // Contrast mode uses stronger radial force to maintain pole separation despite cross-edges
+      const radialStrength = mode === 'contrast' ? 0.060 : mode === 'concept' ? 0.045 : mode === 'action' ? 0.040 : 0.035;
       sim.force('radialCluster', function(alpha: number) {
         for (const node of nodesRef.current) {
           if (isolatedIdSet.has(node.id) || !node.semanticCluster) continue;
@@ -274,8 +382,8 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
           if (angle == null) continue;
           const targetX = Math.cos(angle) * RADIAL_RADIUS;
           const targetY = Math.sin(angle) * RADIAL_RADIUS;
-          if (node.vx != null) node.vx += (targetX - (node.x ?? 0)) * 0.035 * alpha;
-          if (node.vy != null) node.vy += (targetY - (node.y ?? 0)) * 0.035 * alpha;
+          if (node.vx != null) node.vx += (targetX - (node.x ?? 0)) * radialStrength * alpha;
+          if (node.vy != null) node.vy += (targetY - (node.y ?? 0)) * radialStrength * alpha;
         }
       });
     }
@@ -363,10 +471,16 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
           // Weak edges fade naturally; strong edges are clearly prominent.
           const alpha = dimmed ? 0.03
             : mode === 'root' ? 0.15 + Math.pow(edge.strength, 0.7) * 0.60
+            : mode === 'concept' ? 0.12 + edge.strength * 0.45
+            : mode === 'contrast' ? 0.08 + edge.strength * 0.30
             : 0.12 + edge.strength * 0.25;
-          // Edge thickness: root mode uses sharedRootsCount; others use strength
+          // Edge thickness: root → sharedRootsCount; concept → strength (confidence); others → strength
           const lineW = mode === 'root' && edge.sharedRootsCount != null
             ? 0.5 + Math.min(edge.sharedRootsCount, 12) * 0.35
+            : mode === 'concept'
+            ? 0.5 + edge.strength * 3.0
+            : mode === 'action' && edge.sharedActionsCount != null
+            ? 0.5 + Math.min(edge.sharedActionsCount, 8) * 0.40
             : 0.5 + edge.strength * 1.5;
           ctx.strokeStyle = color;
           ctx.globalAlpha = alpha;
@@ -451,9 +565,15 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
 
         const drawR = r * (isHov ? 1.25 : 1);
 
-        // Color: root mode → frequency-based (grey/gold/brown); other modes → cluster color
+        // Color: root → frequency; concept → domain hue+order; action → family hue+centrality; contrast → pair side hue
         const clusterColor = mode === 'root'
           ? getRootFrequencyColor(node.rootVerseFrequency)
+          : mode === 'concept'
+          ? getDomainConceptColor(node.domainColorHue, node.domainOrder)
+          : mode === 'action'
+          ? getActionFamilyNodeColor(node.actionFamilyHue, node.sharedActionsCount)
+          : mode === 'contrast'
+          ? getContrastNodeColor(node.contrastHue, node.contrastRootFreq)
           : getClusterColor(node.cluster);
 
         // Glow
@@ -669,7 +789,9 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
           ) : (
             hovered.cluster && hovered.cluster !== 'unknown' && (
               <div className="text-muted-foreground text-[10px] mt-1 uppercase tracking-wider">
-                {hovered.cluster}
+                {mode === 'action'
+                  ? (ACTION_FAMILY_LABELS[hovered.cluster as ActionFamily] ?? hovered.cluster)
+                  : hovered.cluster}
               </div>
             )
           )}
@@ -684,6 +806,24 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
               Cluster: {hovered.semanticCluster}
             </div>
           )}
+          {mode === 'contrast' && hovered.contrastPairId && (() => {
+            const pair = CONTRAST_DICTIONARY.find((p) => `${p.rootA}:${p.rootB}` === hovered.contrastPairId);
+            const sideLabel = hovered.contrastSide === 'A'
+              ? (pair?.labelA ?? 'A')
+              : (pair?.labelB ?? 'B');
+            return (
+              <div className="mt-1">
+                <div className="text-[10px] font-semibold" style={{ color: hovered.contrastHue != null ? `hsla(${hovered.contrastHue}, 75%, 65%, 1)` : undefined }}>
+                  {sideLabel} · {pair?.category ?? hovered.contrastPairId}
+                </div>
+                {hovered.contrastRootFreq != null && (
+                  <div className="text-muted-foreground text-[10px]">
+                    Root in {hovered.contrastRootFreq} verses
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </>

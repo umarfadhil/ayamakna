@@ -412,6 +412,135 @@ Root mode graph was visually noisy and hard to interpret due to three compoundin
 ### Union Survival Rule
 If edge A→B is in A's top-7 but not B's top-7, it still survives. This ensures every node retains its own strongest connections — intersection would sever real structure for high-degree hub nodes.
 
+## Concept Intelligence Overhaul (Designed — Not Yet Implemented)
+
+### Problem with Current Concept Mode
+- `similarityToVerseLinks()` in `similarityEngine.ts` assigns `linkType: 'concept'` to general similarity links (50% root + 30% concept + 20% verb). Concept mode = composite similarity, NOT true concept-based clustering.
+- No two-level structure (Verse → Concept → Domain).
+- Node coloring uses raw concept ID — no visual domain hierarchy.
+- No focus level control (only root mode has broad/focused/deep).
+
+### Domain Taxonomy (9 Domains — 29 concepts total)
+
+| Domain ID | Name | Hue | Concepts | Verse Coverage |
+|---|---|---|---|---|
+| `divine-attributes` | Divine Essence & Attributes | 45° (gold) | tawhid, qadr, rahmah, hidayah | ~2839 |
+| `revelation-knowledge` | Revelation & Sacred Knowledge | 195° (cyan) | quran, ilm | ~1471 |
+| `faith-consciousness` | Faith & Spiritual Consciousness | 270° (violet) | iman, taqwa, khawf_raja, nur_zulm, tawakkul | ~969 |
+| `worship-devotion` | Worship & Devotion | 140° (green) | salah, dhikr, dua, shukr | ~684 |
+| `virtue-ethics` | Virtue & Moral Excellence | 165° (teal) | akhlaq, ihsan, adl, sabr | ~742 |
+| `repentance-forgiveness` | Repentance & Divine Forgiveness | 30° (orange) | tawbah, maghfirah | ~292 |
+| `disbelief-opposition` | Disbelief & Spiritual Opposition | 0° (red) | kufr, kufr_nifaq | ~592+ |
+| `eschatology-judgment` | Eschatology & Judgment | 220° (deep blue) | qiyamah, jannah_nar, hayat_mawt | ~1220 |
+| `social-ethics` | Social Ethics & Communal Order | 85° (yellow-green) | amr_nahi, jihad, rizq | ~344 |
+
+**Domain ordering within each domain (for intra-domain shade assignment):**
+- Divine: tawhid(1), qadr(2), rahmah(3), hidayah(4)
+- Revelation: quran(1), ilm(2)
+- Faith: iman(1), taqwa(2), nur_zulm(3), khawf_raja(4), tawakkul(5)
+- Worship: salah(1), dhikr(2), dua(3), shukr(4)
+- Virtue: akhlaq(1), ihsan(2), adl(3), sabr(4)
+- Repentance: maghfirah(1), tawbah(2)
+- Disbelief: kufr(1), kufr_nifaq(2)
+- Eschatology: qiyamah(1), hayat_mawt(2), jannah_nar(3)
+- Social: amr_nahi(1), rizq(2), jihad(3)
+
+### Data Quality Notes
+- `iman` and `kufr_nifaq` have 0 verse-concept associations in `ayamakna_verse_concepts` (data gap).
+- `qadr` is by far the most verse-tagged concept (1280 verses) — acts as cross-domain hub.
+
+### New Supabase Tables Required
+
+1. **`ayamakna_concept_domains`**:
+   - `id TEXT PK` (e.g. 'divine-attributes')
+   - `name TEXT` (English)
+   - `name_id TEXT` (Indonesian)
+   - `description TEXT`
+   - `color_hue INTEGER` (0-360 HSL hue)
+   - `display_order INTEGER`
+
+2. **`ayamakna_concepts` column additions**:
+   - `domain_id TEXT` FK → ayamakna_concept_domains(id)
+   - `domain_order INTEGER` (position within domain, 1-based, for shade assignment)
+
+3. **`ayamakna_concept_verse_links`** (precomputed concept-mode connections):
+   - `id SERIAL PK`
+   - `verse_a_id TEXT`, `verse_b_id TEXT`
+   - `shared_concepts_count INTEGER`
+   - `primary_concept_id TEXT` (highest-weight shared concept)
+   - `domain_id TEXT` (domain of primary shared concept)
+   - `similarity_score FLOAT` (concept Jaccard: shared_concepts / union_concepts)
+   - Indexed on both verse columns. RLS: public SELECT-only.
+   - Seed: `scripts/seed-concept-links.mjs`
+
+### Graph Morphology (Concept Mode)
+
+- **Node Color**: `hsla(domain_hue, saturation, lightness, 0.9)` where:
+  - `saturation`: 60% for hub concepts (high verse_count), 45% for rare concepts
+  - `lightness`: 35% + (domain_order-1) × 8% → darker = higher-ranked concept within domain
+  - e.g., tawhid (domain_order=1, hue=45°) → `hsla(45, 70%, 35%, 0.9)` (rich gold)
+  - e.g., hidayah (domain_order=4, hue=45°) → `hsla(45, 50%, 59%, 0.9)` (light gold)
+- **Node Size**: 4 + min(sharedConceptsCount / 30, 1) × 18 (structural importance = degree in concept graph)
+- **Edge Thickness**: 0.5 + min(similarity_score, 1) × 3 (confidence/strength)
+- **Edge Distance (spring)**: `max(40, 220 × (1 − similarity_score × 0.85))` (semantic gravity)
+- **Edge Color**: existing blue (#5a9ec4), with intra-domain edges slightly brighter than cross-domain
+- **Layout**: Hybrid Force + Radial — nodes pulled toward domain's angular position (same radial cluster force pattern as root mode, RADIAL_RADIUS=320, keyed by `domain_id`)
+
+### Focus Levels (Concept Mode)
+- `broad`: similarity_score ≥ 0.15 (shows most connections)
+- `focused`: similarity_score ≥ 0.30 (default)
+- `deep`: similarity_score ≥ 0.48 (tightest semantic clusters only)
+- Module variable `_conceptFocusLevel` in `semanticStore.ts`, exported as `ConceptFocusLevel`
+- UI: same 3-button group in top bar as root mode, visible only in concept mode
+
+### Store Changes
+- `_conceptDomainMap: Map<string, ConceptDomain>` (conceptId → domain data)
+- `getDomainForConcept(conceptId)` → `ConceptDomain | undefined`
+- `getNodeDomainId(verseId)` → domain_id of verse's highest-weight concept
+- `getConceptFocusLevel()` / `setConceptFocusLevel(level)`
+- `getPrimaryCluster` concept mode: returns `domain_id` (for radial layout, replacing raw conceptId)
+- `getEdgesForMode` concept mode: uses `_conceptFocusLevel` threshold against preloaded concept verse links
+
+### Seeding Plan
+- `scripts/seed-concept-links.mjs`: load `ayamakna_verse_concepts`, compute pure concept Jaccard pairs, cap MAX_LINKS_PER_VERSE=25, MIN_SIMILARITY=0.10, skip if similarity < 0.10. Store in `ayamakna_concept_verse_links`. Requires temp INSERT + DELETE policies.
+- Expected row count: 80K-150K links (4491 verse-covered verses, moderate density)
+- `DB_VERSION` bump: 9 → 10 after loading concept_verse_links
+
+### Left Panel (Concept Mode)
+- Mirror of root mode panel: domain insights section
+- **Domain summary**: 9 domain buttons, click selects domain → highlights all verses in that domain's concepts
+- **Concept selector within domain**: shows top concepts by verse count with expand/collapse
+- `selectedDomain` state → `highlightedVerseIds` memo → passed to SemanticGraph for fading
+
+### VerseDetail Changes
+- "Concepts Intelligence" section: show concept badges WITH domain chip (e.g., `[Faith ●] Taqwa`)
+- Domain chip: colored dot matching domain hue, domain short label
+- Clicking domain chip → sets active domain filter (future feature)
+
+### Clustering Quality Targets
+- Expected Silhouette score: ~0.35-0.45 (limited by qadr's cross-domain reach)
+- Expected Modularity: ~0.30-0.45
+- qadr/tawhid/ilm form a tight triangle — expected strong intra-domain cohesion for Divine cluster
+
+## Concept Mode Search & Auto-Highlight
+
+### Search Scope (Concept Mode Only)
+- `getVerseSearchTokensForMode(verseId, 'concept')` in `semanticStore.ts` now returns ONLY domain + concept keywords — NO translation words.
+- Tokens: `concept.name`, `concept.id`, `CONCEPT_INDONESIAN[id]`, `domain.name`, `domain.id`, individual domain name words (e.g., "divine", "essence").
+- This ensures searching "Divine Essence" highlights only verses in that domain, not any verse with those words in its translation.
+
+### Auto-Highlight Placeholder (Concept Mode)
+- `CONCEPT_PLACEHOLDER_WORDS` in `Index.tsx`: 20 domain/concept names (e.g., "Divine Essence", "Taqwa", "Eschatology").
+- Second `useTypingPlaceholder` instance (`conceptTypingPlaceholder`, `conceptPlaceholderWord`) runs in parallel with root placeholder.
+- `effectiveSearchQuery` in `Index.tsx` now handles concept mode: uses `conceptPlaceholderWord.toLowerCase()` when no user search is active in concept mode and no node is selected.
+- Search bar `placeholder` shows `conceptTypingPlaceholder` in concept mode (animated cycling).
+- Cadence: same as root mode — ~10s per word (pauseMs=9000).
+
+### VerseDetail Concept Badge Highlighting
+- `isConceptMatch` in `VerseDetail.tsx` now also checks `domain?.name.toLowerCase().includes(q)` and `domain?.id.toLowerCase().includes(q)`.
+- `domain` variable moved above `isConceptMatch` so it's available for the check.
+- Badges for concepts in a matching domain are highlighted even if the concept name itself doesn't match the query.
+
 ## Search Edges for Isolated Nodes
 
 ### Feature
@@ -429,3 +558,275 @@ When `searchQuery` is active AND `showIsolated` toggle is ON (`isolatedNodes.len
 - Computation runs on frame 1 (query change triggers `searchEdgeComputedRef !== searchQuery`) and every 60 frames (position drift update). Uses `isHighlighted()` + positional distance (Math.hypot) to find K=5 nearest matched nodes per matched isolated node. Deduplicates pairs with a `Set<string>`.
 - Draw order: regular edges → search edges (dashed cyan) → nodes.
 - `seNodeIds` Set (built each frame from current search edges) gates the enhanced isolated node styling.
+
+## Action Intelligence Overhaul — 12 Action Families
+
+### Conceptual Shift
+- **Old**: Action = verb detection (10 vague semantic clusters like "Belief & Faith", "Knowledge").
+- **New**: Action = Agent → Action → Object → Context. Answers "What are the recurring behavioral patterns?"
+- Distinction from Concept: Concept = "what is it about?" (thematic); Action = "what is being done?" (procedural).
+- Two verses may share concept "Guidance" but differ in action: "seek guidance" vs "grant guidance".
+
+### 12 Action Families (actionDictionaries.ts)
+| Family ID | Name | Hue |
+|---|---|---|
+| `worship_devotion` | Worship & Devotion | 140° |
+| `moral_conduct` | Moral Conduct | 165° |
+| `divine_command` | Divine Command & Revelation | 45° |
+| `divine_creation` | Divine Creation & Providence | 60° |
+| `knowledge_reflection` | Knowledge & Reflection | 195° |
+| `rejection_denial` | Rejection & Denial | 0° |
+| `proclamation_warning` | Proclamation & Warning | 30° |
+| `social_transaction` | Social Transaction | 85° |
+| `spiritual_states` | Spiritual States | 270° |
+| `conflict_resistance` | Conflict & Resistance | 15° |
+| `divine_retribution` | Divine Retribution | 350° |
+| `seeking_supplication` | Seeking & Supplication | 220° |
+
+- `ACTION_FAMILY_HUES`: HSL hue per family (pre-resolved for draw loop).
+- `ACTION_PLACEHOLDER_WORDS`: 20 words for animated search bar in action mode.
+- Legacy aliases exported: `SemanticCluster = ActionFamily`, `ACTION_CLUSTER_MAP = ACTION_FAMILY_MAP`, `SEMANTIC_CLUSTER_LABELS = ACTION_FAMILY_LABELS`.
+- **Duplicate key fix**: 'صبر' kept only in moral_conduct; 'غضب' replaced with 'سخط' in divine_retribution; 'دعو' kept only in proclamation_warning.
+
+### Supabase Tables
+- `ayamakna_action_families`: 12 rows (id, name, name_id, color_hue, display_order). Static reference.
+- `ayamakna_action_verse_links`: precomputed action-mode verse connections.
+  - Columns: `id SERIAL PK`, `verse_a_id`, `verse_b_id`, `shared_actions_count INTEGER`, `primary_action_family TEXT`, `similarity_score FLOAT`.
+  - Indexed on both verse columns. RLS: public SELECT-only.
+  - Seed: `node scripts/seed-action-verse-links.mjs` (requires temp INSERT + DELETE policies; drop after).
+
+### Seed Script (seed-action-verse-links.mjs)
+- Loads `ayamakna_action_edges` (verse_id, action_root, semantic_cluster).
+- Builds verse → Set<action_root> map (deduplicated per verse).
+- Inverted index: action_root → [verseId]. Skips roots in >500 verses (noise).
+- Action Jaccard = shared_action_roots / union_action_roots. MIN_SIMILARITY=0.10.
+- Primary_action_family = most frequent family among shared roots (via inline ACTION_FAMILY_MAP).
+- Per-node cap: top 25 edges per verse, union survival rule.
+- `DB_VERSION` bumped 10 → 11 to invalidate IndexedDB cache.
+
+### Graph Morphology (Action Mode)
+- **Node color**: `getActionFamilyColor(actionFamilyHue, sharedActionsCount)` → `hsla(hue, 45+activity×30%, 40−activity×8%, 1)` where activity = min(sharedActionsCount/25, 1).
+- **Node size**: `4 + min(sharedActionsCount/25, 1) × 18` (behavioral centrality).
+- **Edge thickness**: `0.5 + min(sharedActionsCount, 8) × 0.40`.
+- **Edge distance (spring)**: `max(40, 220 × (1 − strength × 0.85))` (behavioral gravity).
+- **Edge strength**: `max(0.12, strength × 0.45)`.
+- **Layout**: Radial by action family. `semanticCluster = actionFamilyId` on nodes; `radialStrength = 0.040`.
+
+### Focus Levels (Action Mode)
+- `ActionFocusLevel`: `'broad' | 'focused' | 'deep'`
+- Thresholds: `broad=0.12`, `focused=0.25`, `deep=0.40` (similarity_score min).
+- `_actionFocusLevel` in `semanticStore.ts`, exported via `setActionFocusLevel()` / `getActionFocusLevel()`.
+- UI: 3-button group in top bar (green styling, appears only in action mode).
+
+### Search Scope (Action Mode)
+- `getVerseSearchTokensForMode(verseId, 'action')` returns ONLY: canonical action names, action family IDs, `ACTION_FAMILY_LABELS` (EN), `ACTION_FAMILY_INDONESIAN` (ID). NO translation words.
+- Auto-highlight: `ACTION_PLACEHOLDER_WORDS` cycling through action family keywords (~10s per word via useTypingPlaceholder, pauseMs=9000).
+
+### GraphNode / GraphEdge New Fields
+- `GraphNode`: `sharedActionsCount?`, `actionFamilyId?`, `actionFamilyHue?`
+- `GraphEdge`: `sharedActionsCount?`
+
+### VerseDetail Action Family Badge
+- `ACTION_FAMILY_HUES` imported in `VerseDetail.tsx`.
+- Each `ActionRow` shows a small colored dot (2×2, `hsl(hue, 55%, 52%)`) in the right-side meta area alongside tense + frequency.
+- Expanded section shows a colored badge (dot + family label) with inline HSL border/background/text styles.
+
+## Actor Ontology + Behavioral Summary Redesign
+
+### ActorOntology (actionDictionaries.ts)
+- `ActorOntology` type: `'divine' | 'angelic' | 'human' | 'jinn_shaytan' | 'collective' | 'natural'`
+- `ACTOR_ONTOLOGY_MAP`: maps existing `ActorType` → `ActorOntology` (no DB change; derived mapping).
+- `ACTOR_ONTOLOGY_HUES`: divine=45°, angelic=195°, human=140°, jinn_shaytan=0°, collective=85°, natural=220°.
+- `ACTOR_ONTOLOGY_LABELS`: display names per ontology group.
+- `ACTOR_ROLE_LABELS`: granular role display names (e.g., "Prophet / Messenger", "Believer (Mu'min)").
+
+### ActionSummary New Fields (types.ts)
+- `dominantActorOntology: ActorOntology` — top-level ontology group of dominant actor.
+- `temporalMode: string` — derived from tenseDistribution: `'Command dominant'` (imperative>30%), `'Eschatological'` (future>15%), `'Present dominant'`, `'Past dominant'`, `'Mixed'`.
+
+### Store New Exports (semanticStore.ts)
+- `getActionRootVerseCount(root)` → number of unique verses containing an action root.
+- `getActionRootVerseIds(root)` → `Set<string>` for graph highlight.
+- `getActionFamilyVerseCount(family)` → unique verse count for a family.
+- `actorOntology` + `actorOntologyHue` fields added to `GraphNode` in action mode `buildGraphData()`.
+
+### VerseDetail.tsx — Action Intelligence Redesign (v2)
+- **Removed**: `ActionFamilyGroup` (collapsible bordered sections), `ACTOR_LABELS`, `ACTOR_COLORS`, `TENSE_LABELS`, `familyGroups` memo, actor ontology imports.
+- **`ActionBehavioralSummary` simplified**: now shows ONLY: "Category" (dominant action family, title-cased label) + "Actions" list (Arabic verbText + English canonical, deduplicated, max 10). Removed: Actor Ontology, Dominant Role, Behavioral Polarity, Temporal Mode, purpose sentence.
+- `ActionBehavioralSummary` accepts `actions: ActionEdge[]` + optional `onActionFilter` props.
+- Action rows in summary show inline "N verses ↗" hover button if `onActionFilter` is provided.
+
+### SemanticGraph.tsx — Node Color (v2)
+- **Old**: `getActorOntologyColor(actorOntologyHue)` — colored by who is acting.
+- **New**: `getActionFamilyNodeColor(actionFamilyHue, sharedActionsCount)` — colored by action family. Same family = same hue. `sharedActionsCount` drives saturation/lightness gradations within family (more central = more vivid). Formula: `hsla(hue, 50+activity×28%, 42-activity×10%, 1)` where activity = sharedActionsCount/25.
+- Radial clustering by action family unchanged (semanticCluster = actionFamilyId, radialStrength=0.040).
+
+### Index.tsx
+- `getActionRootVerseIds` imported from store.
+- `highlightedVerseIds: Set<string> | null` state added (was previously only memo for root mode panel).
+- `handleActionFilter(actionRoot)` callback: calls `getActionRootVerseIds` → sets `highlightedVerseIds` → dims non-matching nodes in graph.
+- `highlightedVerseIds` passed to `SemanticGraph`; `onActionFilter` passed to `VerseDetail`.
+
+## Action Intelligence — Verb Purity + Category Coverage Fixes
+
+### Problem
+- `ayamakna_action_edges` was seeded with a weak POS heuristic (`/^[يتان]/` + length≥4) that:
+  1. **False positives**: noun roots starting with يتان (e.g., شيأ=thing, يوم=day, نفس=soul, نطف=drop) were seeded as actions
+  2. **False negatives**: past tense verbs (starting with consonants) were missed entirely
+- 1889/2852 rows had NULL `semantic_cluster` (old `ACTION_CLUSTER_MAP` didn't cover them)
+- The `LEGACY_CLUSTER_MAP` fix (previous session) handles 963 rows with old cluster IDs
+- 1889 NULL rows fall back to `ACTION_FAMILY_MAP[action_root]`; noun roots not in the map → undefined → grey/no category
+
+### Root Cause of Unmapped Roots (DB query result — top NULL-cluster roots)
+- **True nouns (false positives)**: شيأ(144), يوم(19), نفس(15), نطف(11), ترب(16) — should NOT be in action edges
+- **Real verb roots missing from ACTION_FAMILY_MAP**: كون(62), قوم(57), رود(47), أمن(41), أتي(35), فعل(22), نفع(21), تبع(20), بدل(17), ولي(17), غني(16), عمل(16), سوي(16), يسر(15), ندي(15), لقي(15), قبل(14), طوع(14), هزأ(12), أكل(12), ملك(11), فصل(11), قلب(10), رود(47), أخذ(23 — hamza variant of اخذ), أمن(41 — hamza variant of امن)
+
+### Fix 1: Expand ACTION_FAMILY_MAP (`actionDictionaries.ts`)
+Added ~25 new verb roots across all 12 families:
+- `worship_devotion`: امن, أمن (hamza variant), طوع
+- `moral_conduct`: عمل, فعل, نفع, قوم, تبع
+- `divine_command`: يسر, فصل, ولي
+- `divine_creation`: كون, سوي, غني, ملك
+- `rejection_denial`: هزأ
+- `proclamation_warning`: ندي
+- `social_transaction`: بدل, لقي, أكل, أتي, قبل
+- `divine_retribution`: أخذ (hamza variant of اخذ)
+- `seeking_supplication`: رود, قلب
+
+### Fix 2: Client-side filter in `dataLoader.ts`
+After mapping action edges, `.filter(a => a.semanticCluster !== undefined)` removes edges whose root is not in ACTION_FAMILY_MAP (noun false positives). Applied after LEGACY_CLUSTER_MAP normalization.
+
+### Fix 3: Isolation of no-category verses in action graph (`semanticStore.ts` `buildGraphData`)
+In action mode node building: if `getPrimaryCluster('action', ...) === 'unknown'`, `continue` (skip node). After building all nodes, filter edges to only those where both endpoints are in the final node set (`nodeIdSet`). Verses with no valid-family action roots are naturally isolated.
+
+### Fix 4: Seed Script Overhaul (`seed-action-edges.mjs` v2)
+Changed source from raw `ayamakna_verses.text_arabic` to `ayamakna_verse_tokens`:
+- Loads all tokens from `ayamakna_verse_tokens` (morphologically analyzed)
+- **Strict filter**: only seeds tokens where `root IN ACTION_FAMILY_MAP` — guarantees every seeded edge has `semantic_cluster != NULL`
+- Skips `pos = 'particle'` tokens
+- Uses `token.surface` as `verb_text` (actual form in verse)
+- Clears all old rows (`DELETE ... neq 'id', '___never___'`) before inserting
+- `tense` classification still uses heuristic on surface form
+- After running: must re-seed `ayamakna_action_verse_links` with `node scripts/seed-action-verse-links.mjs`
+
+### DB_VERSION bumped 11 → 12
+Invalidates IndexedDB cache for the new filter logic.
+
+### Re-seeding (to apply full fix to DB)
+1. Add temp DELETE + INSERT policies on `ayamakna_action_edges`
+2. `node scripts/seed-action-edges.mjs`
+3. Drop temp policies, add temp policies on `ayamakna_action_verse_links`
+4. `node scripts/seed-action-verse-links.mjs`
+5. Drop temp policies
+
+## Action Mode UI Fixes
+
+### 1. Graph Tooltip Category Label Fix
+- **Problem**: Hovering a node in action mode showed raw cluster ID (e.g. `MORAL_CONDUCT`) instead of the human-readable label.
+- **Fix**: `SemanticGraph.tsx` tooltip block now resolves `hovered.cluster` through `ACTION_FAMILY_LABELS` when `mode === 'action'`. Import added: `ACTION_FAMILY_LABELS`, `ActionFamily` from `actionDictionaries`.
+
+### 2. Action Placeholder Words Updated
+- `ACTION_PLACEHOLDER_WORDS` in `actionDictionaries.ts` now contains all 12 family labels (e.g. "Worship & Devotion", "Social & Family Affairs") + 12 key canonical action names.
+- `Index.tsx` now imports `ACTION_PLACEHOLDER_WORDS` from `actionDictionaries` instead of maintaining a duplicate local array.
+
+### 3. Multi-Word Placeholder AND-Logic Fix
+- **Problem**: Placeholder words containing `&` (e.g. "Worship & Devotion") caused the AND-search to require `&` to match a token, so no nodes highlighted.
+- **Fix**: `isHighlighted()` in `SemanticGraph.tsx` filters split words by `/[\p{L}\p{N}]/u` — only alphanumeric words are required to match. Symbols like `&` are ignored.
+
+### 4. Action Search Scope (already correct — confirmed)
+- `getVerseSearchTokensForMode(verseId, 'action')` returns ONLY: canonical action names, family labels (EN + individual words), family IDs, Indonesian family keywords. No translation words.
+- This ensures searching "Worship" or "Social & Family Affairs" highlights only matching behavioral verses.
+
+## Contrast Intelligence Overhaul
+
+### Feature Goals (implemented)
+1. **Frequency Asymmetry**: show corpus verse-frequency counts per root, dominance gap, ratio, visual bars.
+2. **Cluster by contrast topics** (17 predefined pairs, not individual verses).
+3. **Precomputed Supabase table**: `ayamakna_contrast_verse_links`.
+4. **Graph morphology**: bipartite radial layout (A-side left hemisphere, B-side right), topic-based pair-side colors, frequency-based node sizing.
+5. **Broad/Focused/Deep focus levels** (edge cap, not threshold).
+6. **Search scope**: ONLY contrast topic labels + English expansions — no translation words.
+7. **Auto-highlight placeholder**: 20 contrast keywords cycling via `useTypingPlaceholder`.
+
+### Supabase Table (`ayamakna_contrast_verse_links`)
+- Columns: `id SERIAL PK`, `verse_a_id TEXT`, `verse_b_id TEXT`, `pair_id TEXT`, `category TEXT`, `contrast_strength FLOAT DEFAULT 0.8`.
+- Unique constraint: `(verse_a_id, verse_b_id, pair_id)`.
+- RLS: public SELECT-only.
+- Seed: `node scripts/seed-contrast-verse-links.mjs` (requires temp INSERT + DELETE policies).
+- Result: **4,155 links** across 16 of 17 pairs. `جنن:نار` skipped — `نار` not in token DB (no root stored for fire noun).
+- Root aliases: `ءمن` → `أمن`, `ءخر` → `أخر` (token DB uses alef with hamza above, not bare hamza).
+- Bug fix in seed script: `edgesByNode` must push original object references (not new objects) for Set deduplication to work correctly in union survival rule. Also switched to `upsert(ignoreDuplicates=true)` as safety net.
+
+### Seed Script (`scripts/seed-contrast-verse-links.mjs`)
+- Loads verse tokens, builds root→verseId index (pos != 'particle').
+- For each pair: samples up to MAX_VERSE_SET=70 per side, cross-pairs up to MAX_LINKS_PER_PAIR=300.
+- Per-verse cap (MAX_LINKS_PER_VERSE=15) with union survival rule.
+- `ROOT_ALIASES` dict maps `CONTRAST_DICTIONARY` root keys → token DB root forms.
+
+### New Exports (`contrastEngine.ts`)
+- `CONTRAST_PAIR_ORDER: string[]` — 17 pair IDs in fixed order (index used for bipartite angular position).
+- `CONTRAST_PAIR_HUES: Record<string, { hueA, hueB }>` — hue per side per pair (avoids green/black/white).
+- `CONTRAST_LABEL_ENGLISH: Record<string, string>` — space-sep English keywords per label (for search tokens).
+- `CONTRAST_PLACEHOLDER_WORDS: string[]` — 20 English contrast concept words.
+
+### ContrastFocusLevel (`semanticStore.ts`)
+- `CONTRAST_CAPS = { broad: 15, focused: 8, deep: 3 }` — per-verse edge cap (not similarity threshold, since all links have fixed strength=0.8).
+- `setContrastFocusLevel()` / `getContrastFocusLevel()` / `ContrastFocusLevel` type exported.
+- Module state: `_contrastVerseLinks: VerseLink[]`, `_verseContrastPairsMap: Map<string, Set<string>>`.
+
+### Graph Node Fields (`visualization/types.ts`)
+- `contrastSide?: 'A' | 'B'` — pole (A=positive/light, B=negative/dark).
+- `contrastHue?: number` — HSL hue from CONTRAST_PAIR_HUES (pre-resolved).
+- `contrastPairIdx?: number` — pair index 0-16 in CONTRAST_PAIR_ORDER (for bipartite angle).
+- `contrastRootFreq?: number` — corpus verse-frequency of primary contrast root (node sizing).
+- `contrastPairId?: string` — primary contrast pair ID (e.g. "نور:ظلم").
+
+### VerseLink Fields (`types.ts`)
+- `pairId?: string` — contrast pair ID "rootA:rootB" (contrast links only).
+- `contrastCategory?: string` — contrast category e.g. "light", "faith".
+
+### Graph Morphology (`SemanticGraph.tsx`)
+- `getContrastNodeColor(hue?, rootFreq?)` — `hsla(hue, 55+activity×25%, 45−activity×8%, 1)`.
+- `getNodeRadius` contrast: `4 + min(rootFreq/300, 1) × 16`.
+- Edge alpha contrast: `0.08 + strength × 0.30`.
+- Edge distance contrast: `max(180, 400 × (1 − strength × 0.5))` — tense opposition spring.
+- **Bipartite radial layout**: `semanticCluster = pairId + ':' + side`. ClusterAngleMap:
+  - A-side: `π/2 + (pairIdx / (N-1)) × π` (left hemisphere, top to bottom).
+  - B-side: `-π/2 + (pairIdx / (N-1)) × π` (right hemisphere, diametrically opposite).
+  - radialStrength = 0.060 (stronger than other modes to maintain pole separation despite cross-edges).
+- Hover tooltip: shows side label + category + root verse count, colored by `contrastHue`.
+
+### getContrastTopicStats (`semanticStore.ts`)
+```ts
+getContrastTopicStats(pairId): { freqA, freqB, ratio, dominantSide: 'A'|'B', dominanceGap } | null
+```
+- Uses `cache.rootIndex[pair.rootA/rootB].verseIds.length` for corpus frequencies.
+
+### getVerseContrastLinks (`semanticStore.ts`)
+- Now uses `_contrastVerseLinks` (preloaded Supabase) instead of `cache.contrastLinks`.
+- Returns enriched data: `pairId, category, partnerVerseId, score, thisSide: 'A'|'B', topicStats`.
+- Capped at 20 links per verse.
+
+### Contrast Intelligence Panel (`VerseDetail.tsx`)
+- `ContrastLinkData` interface extended with `category`, `thisSide`, `topicStats`.
+- `CONTRAST_PAIR_HUES` imported from contrastEngine.
+- Groups links by pairId — one card per pair.
+- Each card: pair header (colored labels A↔B), side indicator, **frequency asymmetry bars** (two bars with corpus counts, dominance gap, ratio, dominant side), then up to 3 partner verse excerpts with opponent side indicator dot.
+- Ratio display: always shown as dominant:subordinate (e.g., `1.87:1` or `1:2.4`).
+
+### Search Scope (Contrast Mode)
+- `getVerseSearchTokensForMode(verseId, 'contrast')` returns ONLY:
+  - Transliteration labels from `CONTRAST_DICTIONARY` (e.g. "nur", "zulumat", "iman", "kufr") + category.
+  - English keyword expansions from `CONTRAST_LABEL_ENGLISH` (e.g. "light illumination brightness").
+  - Uses `_verseContrastPairsMap` (from preloaded links) — NOT cache.contrastLinks.
+  - NO translation words (unlike old implementation).
+
+### Index.tsx Changes
+- `CONTRAST_PLACEHOLDER_WORDS` imported from contrastEngine.
+- `contrastTypingPlaceholder` + `contrastPlaceholderWord` via `useTypingPlaceholder`.
+- `contrastFocusLevel` state + `handleContrastFocusLevel` callback.
+- `setContrastFocusLevel` imported from store.
+- Search bar placeholder shows `contrastTypingPlaceholder` in contrast mode.
+- `effectiveSearchQuery` uses `contrastPlaceholderWord` in contrast mode (same pattern as other modes).
+- Contrast Focus Level buttons (red styling, contrast mode only): `bg-red-400/20 text-red-300 border-red-400/30`.
+- `contrastFocusLevel` added to `graphData` useMemo deps.

@@ -2,11 +2,22 @@
 // Layer B — Semantic Engine Types
 // =============================================================================
 
+export interface ConceptDomain {
+  id: string;
+  name: string;
+  nameId?: string;
+  description: string;
+  colorHue: number;   // HSL hue 0-360
+  displayOrder: number;
+}
+
 export interface Concept {
   id: string;
   name: string;
   nameAr?: string;
   description: string;
+  domainId?: string;     // FK → ConceptDomain.id
+  domainOrder?: number;  // 1-based rank within domain (drives intra-domain color lightness)
 }
 
 export interface VerseConcept {
@@ -22,9 +33,14 @@ export interface VerseLink {
   verseB: string;
   similarityScore: number; // 0-1
   linkType: LinkType;
-  sharedRootsCount?: number; // number of semantically-mapped shared roots (root links only)
-  semanticCluster?: string;  // primary concept cluster for the link (root links only)
-  hopCount?: number;         // 1=direct root share, 2=via concept neighbor (multi-layer projection)
+  sharedRootsCount?: number;    // number of semantically-mapped shared roots (root links only)
+  semanticCluster?: string;     // primary concept cluster for the link (root links only)
+  hopCount?: number;            // 1=direct root share, 2=via concept neighbor (multi-layer projection)
+  sharedConceptsCount?: number; // number of shared concepts (concept links only)
+  domainId?: string;            // domain of the primary shared concept (concept links only)
+  sharedActionsCount?: number;  // number of shared action roots (action links only)
+  pairId?: string;              // contrast pair ID "rootA:rootB" (contrast links only)
+  contrastCategory?: string;    // contrast category e.g. "light", "faith" (contrast links only)
 }
 
 // --- Root Engine Types ---
@@ -109,7 +125,7 @@ export interface RootAnalytics {
 
 // --- Action Engine Types ---
 
-import type { SemanticCluster, ActionPolarity } from './actionDictionaries';
+import type { ActionFamily, ActionPolarity, ActorOntology } from './actionDictionaries';
 
 export type ActorType =
   | 'divine' | 'human' | 'believer' | 'disbeliever'
@@ -128,19 +144,22 @@ export interface ActionEdge {
   verbText: string;             // Actual Arabic verb word from the verse
   englishMeaning: string;       // English translation from root translations
   rootFrequency: number;        // Corpus-wide frequency of the action root
-  semanticCluster?: SemanticCluster;
+  semanticCluster?: ActionFamily;  // Action family (was SemanticCluster)
+  canonicalAction?: string;     // Normalized English verb form (e.g. "Pray", "Create")
   polarity: ActionPolarity;
 }
 
 export interface ActionSummary {
   dominantActor: ActorType;
+  dominantActorOntology: ActorOntology;  // top-level ontology group
   dominantActorCount: number;
   mostFrequentRoot: string;
   mostFrequentRootMeaning: string;
   mostFrequentRootCount: number;
-  dominantCluster?: SemanticCluster;
+  dominantCluster?: ActionFamily;  // Action family (was SemanticCluster)
   dominantClusterCount: number;
   tenseDistribution: Record<Tense, number>;
+  temporalMode: string;  // 'Past dominant' | 'Present dominant' | 'Command dominant' | 'Eschatological' | 'Mixed'
   polaritySummary: { positive: number; negative: number; neutral: number };
   dominantPolarity: ActionPolarity;
   totalActions: number;
