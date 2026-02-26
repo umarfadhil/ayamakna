@@ -459,13 +459,10 @@ const Index = () => {
 
             <div className="glass-panel px-4 py-2 text-xs text-muted-foreground flex gap-3 items-center">
               <span>
+                <span className="text-primary font-semibold">{getSurahList().length}</span> surahs
+              </span>
+              <span>
                 <span className="text-primary font-semibold">{stats.verses}</span> verses
-              </span>
-              <span>
-                <span className="text-primary font-semibold">{stats.roots}</span> roots
-              </span>
-              <span>
-                <span className="text-primary font-semibold">{stats.concepts}</span> concepts
               </span>
               {coverage &&
               <>
