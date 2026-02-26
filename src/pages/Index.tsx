@@ -31,6 +31,7 @@ import {
 import type { RootFocusLevel, ConceptFocusLevel, ActionFocusLevel, ContrastFocusLevel } from '@/store/semanticStore';
 import { ACTION_PLACEHOLDER_WORDS } from '@/engine/semantic/actionDictionaries';
 import { CONTRAST_PLACEHOLDER_WORDS } from '@/engine/semantic/contrastEngine';
+import MobileControlsFab from '@/components/graph/MobileControlsFab';
 
 // --- Root translation words to cycle through in the search placeholder ---
 const ROOT_PLACEHOLDER_WORDS = [
@@ -338,8 +339,8 @@ const Index = () => {
 
             </div>
 
-            {/* Mode Toggle */}
-            <div className="glass-panel flex p-1 gap-0.5">
+            {/* Mode Toggle — hidden on mobile, shown via FAB */}
+            <div className="glass-panel hidden md:flex p-1 gap-0.5">
               {MODE_CONFIG.map(({ mode, label, icon: Icon, color }) =>
               <button
                 key={mode}
@@ -357,10 +358,10 @@ const Index = () => {
               )}
             </div>
 
-            {/* Isolated Verses Toggle */}
+            {/* Isolated Verses Toggle — hidden on mobile */}
             <button
               onClick={() => setShowIsolated((v) => !v)}
-              className={`glass-panel flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              className={`glass-panel hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
               showIsolated ?
               'bg-slate-400/15 text-slate-300 border border-slate-400/30' :
               'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
@@ -371,9 +372,9 @@ const Index = () => {
               <span className="hidden lg:inline">Isolated</span>
             </button>
 
-            {/* Root Focus Level — root mode only */}
+            {/* Root Focus Level — hidden on mobile */}
             {semanticMode === 'root' &&
-            <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many verse connections to show">
+            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many verse connections to show">
                 {(['broad', 'focused', 'deep'] as RootFocusLevel[]).map((level) =>
               <button
                 key={level}
@@ -390,9 +391,9 @@ const Index = () => {
               </div>
             }
 
-            {/* Concept Focus Level — concept mode only */}
+            {/* Concept Focus Level — hidden on mobile */}
             {semanticMode === 'concept' &&
-            <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many domain connections to show">
+            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many domain connections to show">
                 {(['broad', 'focused', 'deep'] as ConceptFocusLevel[]).map((level) =>
               <button
                 key={level}
@@ -409,9 +410,9 @@ const Index = () => {
               </div>
             }
 
-            {/* Action Focus Level — action mode only */}
+            {/* Action Focus Level — hidden on mobile */}
             {semanticMode === 'action' &&
-            <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many behavioral connections to show">
+            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many behavioral connections to show">
                 {(['broad', 'focused', 'deep'] as ActionFocusLevel[]).map((level) =>
               <button
                 key={level}
@@ -428,9 +429,9 @@ const Index = () => {
               </div>
             }
 
-            {/* Contrast Focus Level — contrast mode only */}
+            {/* Contrast Focus Level — hidden on mobile */}
             {semanticMode === 'contrast' &&
-            <div className="glass-panel flex p-1 gap-0.5" title="Coverage: how many opposing connections to show">
+            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many opposing connections to show">
                 {(['broad', 'focused', 'deep'] as ContrastFocusLevel[]).map((level) =>
               <button
                 key={level}
@@ -513,6 +514,26 @@ const Index = () => {
 
 
           </motion.div>
+
+          {/* Mobile FAB Controls */}
+          <MobileControlsFab
+            semanticMode={semanticMode}
+            onModeChange={setSemanticMode}
+            showIsolated={showIsolated}
+            onToggleIsolated={() => setShowIsolated((v) => !v)}
+            focusLevel={
+              semanticMode === 'root' ? rootFocusLevel :
+              semanticMode === 'concept' ? conceptFocusLevel :
+              semanticMode === 'action' ? actionFocusLevel :
+              contrastFocusLevel
+            }
+            onFocusLevelChange={(level) => {
+              if (semanticMode === 'root') handleRootFocusLevel(level as RootFocusLevel);
+              else if (semanticMode === 'concept') handleConceptFocusLevel(level as ConceptFocusLevel);
+              else if (semanticMode === 'action') handleActionFocusLevel(level as ActionFocusLevel);
+              else handleContrastFocusLevel(level as ContrastFocusLevel);
+            }}
+          />
 
           {/* Verse Detail Panel */}
           <VerseDetail
