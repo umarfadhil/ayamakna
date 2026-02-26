@@ -25,6 +25,7 @@ interface D3Edge {
   sharedRootsCount?: number;
   hopCount?: number;
   sharedConceptsCount?: number;
+  sharedActionsCount?: number;
   sameDomain?: boolean;
 }
 
