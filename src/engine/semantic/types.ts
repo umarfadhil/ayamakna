@@ -172,7 +172,7 @@ export interface ConceptActionComparison {
   actionSummary: ActionSummary;
   topActions: ActionEdge[];
   topActors: Array<{ actor: ActorType; count: number }>;
-  topClusters: Array<{ cluster: SemanticCluster; count: number }>;
+  topClusters: Array<{ cluster: ActionFamily; count: number }>;
 }
 
 // --- Contrast Engine Types ---
