@@ -467,9 +467,6 @@ const Index = () => {
               <span>
                 <span className="text-primary font-semibold">{stats.concepts}</span> concepts
               </span>
-              <span>
-                <span className="text-primary font-semibold">{graphData.edges.length}</span> links
-              </span>
               {coverage &&
               <>
                   <span className="text-muted-foreground/40">·</span>
