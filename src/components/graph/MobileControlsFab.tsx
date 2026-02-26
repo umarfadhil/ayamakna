@@ -100,13 +100,13 @@ const MobileControlsFab: React.FC<MobileControlsFabProps> = ({
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Isolated</span>
               <button
                 onClick={onToggleIsolated}
-                className={`relative w-10 h-5 rounded-full transition-colors ${
+                className={`relative inline-flex w-10 h-5 items-center rounded-full transition-colors ${
                   showIsolated ? 'bg-primary/40' : 'bg-secondary'
                 }`}
               >
                 <span
-                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-foreground transition-transform ${
-                    showIsolated ? 'translate-x-5' : 'translate-x-0.5'
+                  className={`inline-block w-4 h-4 rounded-full bg-foreground transition-transform ${
+                    showIsolated ? 'translate-x-[22px]' : 'translate-x-[2px]'
                   }`}
                 />
               </button>
