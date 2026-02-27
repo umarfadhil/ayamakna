@@ -19,14 +19,17 @@ The application runs entirely in the browser. On first load it fetches morpholog
  - A research and educational tool
  - A structural and linguistic visualization system
  - A semantic analysis experiment
+
 **It is not**:
  - A tafsir (exegetical interpretation)
  - A theological authority
  - A replacement for classical scholarship
  - A definitive explanation of meaning
-> ***All semantic groupings, behavioral classifications, contrast pairings, and centrality measures are derived through algorithmic and linguistic modeling. They reflect structural patterns in the corpus and may not fully capture traditional interpretive nuance.***
 
-This project does not claim doctrinal authority and does not promote any specific theological position. Users are encouraged to consult qualified scholars and classical sources for religious guidance and interpretation.
+All semantic groupings, behavioral classifications, contrast pairings, and centrality measures are derived through algorithmic and linguistic modeling. They reflect structural patterns in the corpus and may not fully capture traditional interpretive nuance.
+
+> ***This project does not claim doctrinal authority and does not promote any specific theological position. Users are encouraged to consult qualified scholars and classical sources for religious guidance and interpretation.***
+
 Sources
 Arabic: quran.com
 Translation (EN): Saheeh International
@@ -34,7 +37,7 @@ Translation (ID): King Fahad Quran Complex
 
 ---
 
-## Five Semantic Modes
+## Four Semantic Modes
 
 Switch between modes using the top bar. Each mode draws different edges, clusters nodes differently, and exposes a different lens on the text.
 
@@ -115,7 +118,7 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 | Edge color | Blue (#5a9ec4) — intra-domain edges slightly brighter |
 | Layout | Radial by domain — nodes pulled toward their domain's angular position on ring |
 
-**Focus levels:** Broad / Focused / Deep set minimum Concept Jaccard (0.15 / 0.30 / 0.48).
+**Focus levels:** Broad / Focused / Deep set minimum Concept Jaccard (0.28 / 0.48 / 0.55).
 
 **How to interpret:**
 - Node color identifies which domain a verse belongs to (its highest-weight concept).
@@ -164,13 +167,7 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 | Edge color | Green (#4CAF50) |
 | Layout | Radial by action family — nodes pulled toward family's angular position |
 
-**Focus levels:** Broad / Focused / Deep set minimum Action Jaccard (0.12 / 0.25 / 0.40).
-
-**VerseDetail — Action Intelligence section:**
-- **Behavioral Summary**: dominant action family, most frequent verb (Arabic + English), tense distribution, polarity breakdown.
-- **Action rows**: actor badge (color-coded by type) + Arabic verb surface form + English meaning + root frequency + polarity dot (green=positive, red=negative, grey=neutral) + action family colored dot.
-- Expandable rows show full verse context with the verb highlighted in the Arabic text.
-- **Flow Mode**: toggle to a mini SVG graph showing Actor → Verb → Target as directed nodes.
+**Focus levels:** Broad / Focused / Deep set minimum Action Jaccard (0.28 / 0.48 / 0.55).
 
 **How to interpret:**
 - Nodes of the same color share a dominant action pattern — e.g., all green nodes are about worship acts, all red nodes involve rejection or disbelief.
@@ -205,10 +202,6 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 | Layout | **Bipartite radial** — A-side (positive/light pole) occupies the left hemisphere; B-side (negative/dark pole) occupies the right hemisphere. Each pair gets a distinct vertical position. Radial strength = 0.060 (stronger than other modes to maintain pole separation). |
 
 **Focus levels:** Broad / Focused / Deep set per-verse edge caps (15 / 8 / 3 edges per verse). Since all links have fixed strength, focus level here controls density rather than a threshold.
-
-**VerseDetail — Contrast Intelligence section:**
-- Groups contrast links by pair — one card per pair.
-- Each card shows: pair header with colored A↔B labels, which side this verse is on, **frequency asymmetry bars** (corpus verse-count per root on each side, dominance gap, ratio), and up to 3 partner verse excerpts with opponent-side indicator.
 
 **How to interpret:**
 - The left hemisphere contains verses of affirmation (light, faith, paradise, mercy).
@@ -252,7 +245,7 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 
 ### Search
 
-All five modes support keyword search through the search bar at the top.
+All four modes support keyword search through the search bar at the top.
 
 - **Root/Similarity mode**: matches root translations (English), root keywords (EN/transliteration/Indonesian), verse English translation, verse Indonesian translation.
 - **Concept mode**: matches domain names, concept names (EN/ID). Does NOT search verse translation text — only thematic labels.
