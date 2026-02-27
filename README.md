@@ -12,6 +12,28 @@ The application runs entirely in the browser. On first load it fetches morpholog
 
 ---
 
+## Disclaimer
+*This project is a computational exploration of the Qur'anic text using root analysis, semantic clustering, and graph-based modeling.*
+
+**It is intended as**:
+ - A research and educational tool
+ - A structural and linguistic visualization system
+ - A semantic analysis experiment
+**It is not**:
+ - A tafsir (exegetical interpretation)
+ - A theological authority
+ - A replacement for classical scholarship
+ - A definitive explanation of meaning
+> ***All semantic groupings, behavioral classifications, contrast pairings, and centrality measures are derived through algorithmic and linguistic modeling. They reflect structural patterns in the corpus and may not fully capture traditional interpretive nuance.***
+
+This project does not claim doctrinal authority and does not promote any specific theological position. Users are encouraged to consult qualified scholars and classical sources for religious guidance and interpretation.
+Sources
+Arabic: quran.com
+Translation (EN): Saheeh International
+Translation (ID): King Fahad Quran Complex
+
+---
+
 ## Five Semantic Modes
 
 Switch between modes using the top bar. Each mode draws different edges, clusters nodes differently, and exposes a different lens on the text.
@@ -42,10 +64,6 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 | Layout | Hybrid Force-Directed + Radial. Nodes are pulled toward their semantic concept cluster's angular position on a ring (radius=320). |
 
 **Focus levels:** Broad / Focused / Deep control the minimum Semantic Jaccard threshold (0.28 / 0.48 / 0.55). Higher = fewer but tighter connections.
-
-**Left panel — Root Intelligence:**
-- **Centrality insights**: three clickable root discoveries — Most Connected (yellow), Bridge Root (blue), Most Frequent (green). Each click highlights all verses containing that root.
-- **Root Analytics**: degree centrality (co-occurrence adjacency), betweenness (bell-curve approximation), composite importance score (`0.45×degree + 0.35×betweenness + 0.2×frequencyRank`).
 
 **VerseDetail — Root Intelligence section:**
 - Shows every trilateral root physically present in the verse (from morphological token data — deterministic).
@@ -117,8 +135,7 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 - Particle roots and non-verb roots are excluded.
 - Two verses connect if their action root sets overlap. Similarity is **Action Jaccard**: `shared_action_roots / union_action_roots`.
 - Connections are precomputed in `ayamakna_action_verse_links`.
-- Actor classification uses 10 types (Allah, Believer, Disbeliever, Prophet, Hypocrite, Shaytan, Angel, Mankind, Human, Nature) with priority-ordered detection.
-
+  
 **12 Action Families:**
 
 | Family | Hue | Description |
@@ -203,7 +220,7 @@ Switch between modes using the top bar. Each mode draws different edges, cluster
 
 ---
 
-### 5. Similarity Mode
+### 5. Similarity Mode (Under Development)
 
 **What it shows:** Verses with high composite semantic similarity across all dimensions.
 
