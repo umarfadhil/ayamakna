@@ -50,7 +50,7 @@ async function fetchAll<T>(table: string, columns: string): Promise<T[]> {
   let done = false;
 
   while (!done) {
-    const { data, error } = await supabase
+    const { data, error } = await (supabase as any)
       .from(table)
       .select(columns)
       .range(from, from + PAGE_SIZE - 1);
