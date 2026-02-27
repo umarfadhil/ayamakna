@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, BookOpen, GitBranch, Layers, Swords, Scale, Brain, Loader2, Eye, EyeOff } from 'lucide-react';
-import SemanticGraph from '@/components/graph/SemanticGraph';
+import { Search, BookOpen, GitBranch, Layers, Swords, Scale, Loader2, Eye, EyeOff, Info, Github, RotateCcw } from 'lucide-react';
+import SemanticGraph, { type SemanticGraphHandle } from '@/components/graph/SemanticGraph';
 import ParticleBackground from '@/components/graph/ParticleBackground';
 import VerseDetail from '@/components/reader/VerseDetail';
 import type { GraphNode } from '@/engine/visualization/types';
@@ -41,12 +41,15 @@ const ROOT_PLACEHOLDER_WORDS = [
 'Fear', 'Hope', 'Strength', 'Trust', 'Resurrection'];
 
 
-// --- Concept/Domain words to cycle through in concept mode search placeholder ---
+// --- Concept words to cycle through in concept mode search placeholder ---
+// Keep these aligned with ayamakna_concepts.name so auto-highlight always hits.
 const CONCEPT_PLACEHOLDER_WORDS = [
-'Divine Essence', 'Mercy', 'Faith', 'Taqwa', 'Tawhid',
-'Revelation', 'Knowledge', 'Worship', 'Repentance', 'Forgiveness',
-'Eschatology', 'Paradise', 'Virtue', 'Justice', 'Guidance',
-'Social Ethics', 'Disbelief', 'Prayer', 'Gratitude', 'Spiritual Consciousness'];
+'Tawhid', 'Taqwa', 'Sabr', 'Tawakkul', 'Dhikr',
+'Salah', 'Ilm', 'Rahmah', 'Hidayah', 'Ihsan',
+'Iman', 'Kufr', 'Nifaq', 'Light & Darkness', 'Life & Death',
+'Qadr', 'Akhlaq', 'Maghfirah', 'Amr & Nahi', 'Tawbah',
+'Rizq', 'Adl', 'Shukr', "Du'a", 'Jihad',
+'Jannah & Nar', 'Qiyamah', 'Quran', 'Khawf & Raja'];
 
 
 /**
@@ -126,6 +129,9 @@ const Index = () => {
   const [actionFocusLevel, setActionFocusLevelState] = useState<ActionFocusLevel>('focused');
   const [contrastFocusLevel, setContrastFocusLevelState] = useState<ContrastFocusLevel>('focused');
   const [highlightedVerseIds, setHighlightedVerseIds] = useState<Set<string> | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [visitorCount, setVisitorCount] = useState<number | null>(null);
+  const graphRef = useRef<SemanticGraphHandle | null>(null);
 
   const handleRootFocusLevel = useCallback((level: RootFocusLevel) => {
     setRootFocusLevel(level);
@@ -170,6 +176,26 @@ const Index = () => {
       }
     })();
     return () => {cancelled = true;};
+  }, []);
+
+  // Visitor metric (client-local unique visitors)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const idKey = 'ayamakna_visitor_id';
+      const countKey = 'ayamakna_visitor_count';
+      let count = Number(localStorage.getItem(countKey) ?? '0');
+      if (!localStorage.getItem(idKey)) {
+        const id = (crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+        localStorage.setItem(idKey, id);
+        count += 1;
+        localStorage.setItem(countKey, String(count));
+      }
+      setVisitorCount(count);
+    } catch (err) {
+      console.warn('Visitor metric unavailable:', err);
+      setVisitorCount(null);
+    }
   }, []);
 
   const graphData = useMemo(
@@ -292,6 +318,7 @@ const Index = () => {
         <>
           {/* Semantic Graph */}
           <SemanticGraph
+            ref={graphRef}
             data={graphData}
             searchQuery={effectiveSearchQuery}
             onNodeClick={handleNodeClick}
@@ -307,146 +334,162 @@ const Index = () => {
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.5, duration: 0.6 }}
-            className="fixed top-0 left-0 right-0 p-4 flex items-center gap-3"
+            className="fixed top-0 left-0 right-0 p-4"
             style={{ zIndex: 30 }}>
 
-            {/* Logo */}
-            <div className="flex items-center gap-3 mr-2">
-              <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center gold-glow">
-                <span className="text-primary font-arabic text-sm font-bold">ق</span>
-              </div>
-              <div>
-                <h1 className="text-sm font-semibold text-foreground leading-none">AyaMakna</h1>
-                <p className="text-[10px] text-muted-foreground">Semantic Intelligence</p>
-              </div>
-            </div>
+            <div className="flex items-center gap-3 w-full">
+              <div className="flex items-center gap-3 flex-1">
+                {/* Logo */}
+                <div className="flex items-center gap-3 mr-2">
+                  <div className="hidden sm:flex w-8 h-8 rounded-full bg-primary/20 border border-primary/30 items-center justify-center gold-glow">
+                    <span className="text-primary font-arabic text-sm font-bold">ق</span>
+                  </div>
+                  <div>
+                    <h1 className="text-sm font-semibold text-foreground leading-none">AyaMakna</h1>
+                    <p className="text-[10px] text-muted-foreground">Semantic Intelligence</p>
+                  </div>
+                </div>
 
-            {/* Search */}
-            <div className="flex-1 max-w-sm relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder={
-                semanticMode === 'root' ? typingPlaceholder :
-                semanticMode === 'concept' ? conceptTypingPlaceholder :
-                semanticMode === 'action' ? actionTypingPlaceholder :
-                semanticMode === 'contrast' ? contrastTypingPlaceholder :
-                'Search verses…'
+                {/* Search */}
+                <div className="flex-1 max-w-sm relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder={
+                    semanticMode === 'root' ? typingPlaceholder :
+                    semanticMode === 'concept' ? conceptTypingPlaceholder :
+                    semanticMode === 'action' ? actionTypingPlaceholder :
+                    semanticMode === 'contrast' ? contrastTypingPlaceholder :
+                    'Search verses…'
+                    }
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full glass-panel pl-10 pr-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 transition-all" />
+
+                </div>
+              </div>
+
+              <div className="hidden md:flex items-center gap-2">
+                {/* Mode Toggle — hidden on mobile, shown via FAB */}
+                <div className="glass-panel hidden md:flex p-1 gap-0.5">
+                  {MODE_CONFIG.map(({ mode, label, icon: Icon, color }) =>
+                  <button
+                    key={mode}
+                    onClick={() => setSemanticMode(mode)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    semanticMode === mode ?
+                    'bg-primary/20 text-primary border border-primary/30' :
+                    'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
+                    }
+                    title={`${label} Mode`}>
+
+                      <Icon className={`w-3.5 h-3.5 ${semanticMode === mode ? color : ''}`} />
+                      <span className="hidden lg:inline">{label}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Root Focus Level — hidden on mobile */}
+                {semanticMode === 'root' &&
+                <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many verse connections to show">
+                    {(['broad', 'focused', 'deep'] as RootFocusLevel[]).map((level) =>
+                  <button
+                    key={level}
+                    onClick={() => handleRootFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                    rootFocusLevel === level ?
+                    'bg-primary/20 text-primary border border-primary/30' :
+                    'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
+                    }>
+
+                        {level}
+                      </button>
+                  )}
+                  </div>
                 }
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full glass-panel pl-10 pr-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 transition-all" />
 
-            </div>
+                {/* Concept Focus Level — hidden on mobile */}
+                {semanticMode === 'concept' &&
+                <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many domain connections to show">
+                    {(['broad', 'focused', 'deep'] as ConceptFocusLevel[]).map((level) =>
+                  <button
+                    key={level}
+                    onClick={() => handleConceptFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                    conceptFocusLevel === level ?
+                    'bg-blue-400/20 text-blue-300 border border-blue-400/30' :
+                    'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
+                    }>
 
-            {/* Mode Toggle — hidden on mobile, shown via FAB */}
-            <div className="glass-panel hidden md:flex p-1 gap-0.5">
-              {MODE_CONFIG.map(({ mode, label, icon: Icon, color }) =>
+                        {level}
+                      </button>
+                  )}
+                  </div>
+                }
+
+                {/* Action Focus Level — hidden on mobile */}
+                {semanticMode === 'action' &&
+                <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many behavioral connections to show">
+                    {(['broad', 'focused', 'deep'] as ActionFocusLevel[]).map((level) =>
+                  <button
+                    key={level}
+                    onClick={() => handleActionFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                    actionFocusLevel === level ?
+                    'bg-green-400/20 text-green-300 border border-green-400/30' :
+                    'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
+                    }>
+
+                        {level}
+                      </button>
+                  )}
+                  </div>
+                }
+
+                {/* Contrast Focus Level — hidden on mobile */}
+                {semanticMode === 'contrast' &&
+                <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many opposing connections to show">
+                    {(['broad', 'focused', 'deep'] as ContrastFocusLevel[]).map((level) =>
+                  <button
+                    key={level}
+                    onClick={() => handleContrastFocusLevel(level)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                    contrastFocusLevel === level ?
+                    'bg-red-400/20 text-red-300 border border-red-400/30' :
+                    'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
+                    }>
+
+                        {level}
+                      </button>
+                  )}
+                  </div>
+                }
+              </div>
+
+              {/* Isolated Verses Toggle — hidden on mobile */}
               <button
-                key={mode}
-                onClick={() => setSemanticMode(mode)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                semanticMode === mode ?
-                'bg-primary/20 text-primary border border-primary/30' :
+                onClick={() => setShowIsolated((v) => !v)}
+                className={`glass-panel hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                showIsolated ?
+                'bg-slate-400/15 text-slate-300 border border-slate-400/30' :
                 'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
                 }
-                title={`${label} Mode`}>
+                title="Show isolated verses (not yet semantically mapped)">
 
-                  <Icon className={`w-3.5 h-3.5 ${semanticMode === mode ? color : ''}`} />
-                  <span className="hidden lg:inline">{label}</span>
-                </button>
-              )}
+                {showIsolated ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                <span className="hidden lg:inline">Isolated</span>
+              </button>
+
+              {/* Reset View — hidden on mobile */}
+              <button
+                onClick={() => graphRef.current?.resetView()}
+                className="glass-panel hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all"
+                title="Reset view to default"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span className="hidden lg:inline">Default</span>
+              </button>
             </div>
-
-            {/* Isolated Verses Toggle — hidden on mobile */}
-            <button
-              onClick={() => setShowIsolated((v) => !v)}
-              className={`glass-panel hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              showIsolated ?
-              'bg-slate-400/15 text-slate-300 border border-slate-400/30' :
-              'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
-              }
-              title="Show isolated verses (not yet semantically mapped)">
-
-              {showIsolated ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-              <span className="hidden lg:inline">Isolated</span>
-            </button>
-
-            {/* Root Focus Level — hidden on mobile */}
-            {semanticMode === 'root' &&
-            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many verse connections to show">
-                {(['broad', 'focused', 'deep'] as RootFocusLevel[]).map((level) =>
-              <button
-                key={level}
-                onClick={() => handleRootFocusLevel(level)}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
-                rootFocusLevel === level ?
-                'bg-primary/20 text-primary border border-primary/30' :
-                'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
-                }>
-
-                    {level}
-                  </button>
-              )}
-              </div>
-            }
-
-            {/* Concept Focus Level — hidden on mobile */}
-            {semanticMode === 'concept' &&
-            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many domain connections to show">
-                {(['broad', 'focused', 'deep'] as ConceptFocusLevel[]).map((level) =>
-              <button
-                key={level}
-                onClick={() => handleConceptFocusLevel(level)}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
-                conceptFocusLevel === level ?
-                'bg-blue-400/20 text-blue-300 border border-blue-400/30' :
-                'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
-                }>
-
-                    {level}
-                  </button>
-              )}
-              </div>
-            }
-
-            {/* Action Focus Level — hidden on mobile */}
-            {semanticMode === 'action' &&
-            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many behavioral connections to show">
-                {(['broad', 'focused', 'deep'] as ActionFocusLevel[]).map((level) =>
-              <button
-                key={level}
-                onClick={() => handleActionFocusLevel(level)}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
-                actionFocusLevel === level ?
-                'bg-green-400/20 text-green-300 border border-green-400/30' :
-                'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
-                }>
-
-                    {level}
-                  </button>
-              )}
-              </div>
-            }
-
-            {/* Contrast Focus Level — hidden on mobile */}
-            {semanticMode === 'contrast' &&
-            <div className="glass-panel hidden md:flex p-1 gap-0.5" title="Coverage: how many opposing connections to show">
-                {(['broad', 'focused', 'deep'] as ContrastFocusLevel[]).map((level) =>
-              <button
-                key={level}
-                onClick={() => handleContrastFocusLevel(level)}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
-                contrastFocusLevel === level ?
-                'bg-red-400/20 text-red-300 border border-red-400/30' :
-                'text-muted-foreground hover:text-foreground hover:bg-white/5'}`
-                }>
-
-                    {level}
-                  </button>
-              )}
-              </div>
-            }
 
           </motion.div>
 
@@ -458,39 +501,57 @@ const Index = () => {
             className="fixed bottom-4 left-4 right-4 flex items-center justify-between"
             style={{ zIndex: 30 }}>
 
-            <div className="glass-panel px-4 py-2 text-xs text-muted-foreground flex gap-3 items-center">
-              <span>
-                <span className="text-primary font-semibold">{getSurahList().length}</span> surahs
-              </span>
-              <span>
-                <span className="text-primary font-semibold">{stats.verses}</span> verses
-              </span>
-              {coverage &&
-              <>
-                  <span className="text-muted-foreground/40">·</span>
-                  <span title={`${coverage.connected} of ${coverage.total} verses connected in ${semanticMode} mode`}>
-                    <span
-                    className={`font-semibold ${
-                    coverage.pct >= 70 ?
-                    'text-emerald-400' :
-                    coverage.pct >= 40 ?
-                    'text-yellow-400' :
-                    'text-red-400'}`
-                    }>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAboutOpen(true)}
+                className="glass-panel hidden md:flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                title="About AyaMakna"
+              >
+                <Info className="w-3.5 h-3.5 text-primary" />
+                About
+              </button>
 
-                      {coverage.pct}%
-                    </span>{' '}
-                    coverage
-                  </span>
-                </>
-              }
+              <div className="glass-panel px-4 py-2 text-xs text-muted-foreground flex gap-3 items-center">
+                <span>
+                  <span className="text-primary font-semibold">{getSurahList().length}</span> surahs
+                </span>
+                <span>
+                  <span className="text-primary font-semibold">{stats.verses}</span> verses
+                </span>
+                {coverage &&
+                <>
+                    <span className="text-muted-foreground/40">·</span>
+                    <span title={`${coverage.connected} of ${coverage.total} verses connected in ${semanticMode} mode`}>
+                      <span
+                      className={`font-semibold ${
+                      coverage.pct >= 70 ?
+                      'text-emerald-400' :
+                      coverage.pct >= 40 ?
+                      'text-yellow-400' :
+                      'text-red-400'}`
+                      }>
+
+                        {coverage.pct}%
+                      </span>{' '}
+                      coverage
+                    </span>
+                  </>
+                }
+              </div>
+
+              <div className="glass-panel hidden md:flex px-3 py-2 text-xs text-muted-foreground items-center gap-2">
+                <span>Visitors</span>
+                <span className="text-primary font-semibold">
+                  {visitorCount != null ? visitorCount.toLocaleString() : '—'}
+                </span>
+              </div>
             </div>
 
             {selectedNode && selectedVerse &&
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className="glass-panel px-4 py-2 flex items-center gap-3 max-w-lg">
+              className="glass-panel px-4 py-2 hidden md:flex items-center gap-3 max-w-lg">
 
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-foreground truncate">
@@ -521,6 +582,9 @@ const Index = () => {
             onModeChange={setSemanticMode}
             showIsolated={showIsolated}
             onToggleIsolated={() => setShowIsolated((v) => !v)}
+            onAboutOpen={() => setAboutOpen(true)}
+            onResetView={() => graphRef.current?.resetView()}
+            visitorCount={visitorCount}
             focusLevel={
               semanticMode === 'root' ? rootFocusLevel :
               semanticMode === 'concept' ? conceptFocusLevel :
@@ -550,6 +614,103 @@ const Index = () => {
             contrastLinks={selectedContrastLinks}
             similarityLinks={selectedSimilarityLinks}
             onActionFilter={handleActionFilter} />
+
+          <AnimatePresence>
+            {aboutOpen && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center px-4"
+                style={{ zIndex: 60 }}
+                onClick={() => setAboutOpen(false)}
+              >
+                <motion.div
+                  initial={{ scale: 0.95, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.96, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="glass-panel w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 text-sm text-foreground"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-start justify-between gap-4 mb-4">
+                    <div>
+                      <h2 className="text-base font-semibold text-foreground">AyaMakna - Qur'anic Semantic Intelligence System</h2>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        AyaMakna is a web application that tried to reveal hidden structural and thematic patterns in the Qur'an through computational semantic analysis. All 6,236 verses across 114 surahs are loaded, processed, and visualized as an interactive force graph. Each view mode exposes a different layer of meaning.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setAboutOpen(false)}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 text-xs text-muted-foreground">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wider text-foreground/80">Disclaimer</div>
+                      <p className="mt-2">
+                        This project is a computational exploration of the Qur'anic text using root analysis, semantic clustering, and graph-based modeling.
+                      </p>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wider text-foreground/80">It is intended as</div>
+                      <ul className="mt-2 list-disc pl-4">
+                        <li>A research and educational tool</li>
+                        <li>A structural and linguistic visualization system</li>
+                        <li>A semantic analysis experiment</li>
+                      </ul>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wider text-foreground/80">It is not</div>
+                      <ul className="mt-2 list-disc pl-4">
+                        <li>A tafsir (exegetical interpretation)</li>
+                        <li>A theological authority</li>
+                        <li>A replacement for classical scholarship</li>
+                        <li>A definitive explanation of meaning</li>
+                      </ul>
+                    </div>
+
+                    <p>
+                      All semantic groupings, behavioral classifications, contrast pairings, and centrality measures are derived through algorithmic and linguistic modeling. They reflect structural patterns in the corpus and may not fully capture traditional interpretive nuance.
+                    </p>
+                    <p></p>
+                    <code><strong><i>
+                      This project does not claim doctrinal authority and does not promote any specific theological position. Users are encouraged to consult qualified scholars and classical sources for religious guidance and interpretation.
+                    </i></strong></code>
+                    <p></p>
+      
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wider text-foreground/80">Sources</div>
+                      <ul className="mt-2 list-disc pl-4">
+                        <li>Arabic: quran.com</li>
+                        <li>Translation (EN): Saheeh International</li>
+                        <li>Translation (ID): King Fahad Quran Complex</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex items-center justify-between text-xs text-muted-foreground">
+                    <span><i>Powered by Petalytix</i></span>
+                    <a
+                      href="https://github.com/umarfadhil/ayamakna"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                      title="GitHub"
+                    >
+                      <Github className="w-4 h-4" />
+                      GitHub
+                    </a>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
         </>
       </AnimatePresence>

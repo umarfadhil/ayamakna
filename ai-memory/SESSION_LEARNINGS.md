@@ -1,5 +1,20 @@
 # Session Learnings
 
+## UI Behavior Updates (Graph + Top Bar)
+- **Auto-fit on first load**: graph now computes node bounds and fits to screen on initial mode render (desktop/mobile), with safe padding and smooth transition.
+- **Zoom fixes on mobile**: zoom transform now uses canvas-centered coordinates so pinch zoom targets the correct location; canvas `touch-action: none` to prevent browser offset.
+- **Double-click / double-tap focus**: double-click (desktop) and double-tap (touch) smoothly zoom to an appropriate scale centered on the node.
+- **Top bar layout**: focus-level toggles placed next to the mode toggle; isolated toggle pinned to the top-right on desktop.
+- **Mobile cleanup**: the round gold logo glyph in the top bar is hidden on small screens.
+
+## UI Additions: About + Visitor Metric
+- **About panel**: desktop bottom-left About button opens a modal with project description, disclaimer, sources, GitHub icon link, and "Powered by Petalytix".
+- **Visitor metric**: client-local visitor count added; shown next to the stats bar on desktop and embedded in the mobile FAB button.
+- **Mobile layout**: the selected-verse mini card in the bottom bar is hidden on mobile to reduce clutter.
+
+## UI Control: Default View Reset
+- **Reset view**: added a "Default" button (desktop top bar) and a "Default View" action inside the mobile FAB to restore the initial auto-fit zoom/position for the current mode.
+
 ## Full-Scale Implementation Complete
 - Project fully transformed from topic-based graph to **Qur'anic Semantic Intelligence System**.
 - All 3 layers implemented end-to-end: data → engines → store → graph → UI.
@@ -17,7 +32,7 @@
   - Re-seeding requires temp INSERT policies — add via MCP migration, seed, then drop.
 - Old project `tlkykpcznaieulbwkapc` (Petalytix org) is a different restaurant POS app — do not use.
 - **MCP access**: project `.mcp.json` uses stdio Supabase MCP with personal access token.
-- **Anon key**: `[REDACTED_SUPABASE_ANON_KEY]`
+- **Anon key**: `[REDACTED]`
 
 ## Bug Fix: No Nodes (All Modes) — New Project Had No Data
 - **Root cause**: `supabase.ts` pointed to new project (`pkwvovoiljwjjgbythsp`) which had no tables/data.
@@ -530,7 +545,7 @@ If edge A→B is in A's top-7 but not B's top-7, it still survives. This ensures
 - This ensures searching "Divine Essence" highlights only verses in that domain, not any verse with those words in its translation.
 
 ### Auto-Highlight Placeholder (Concept Mode)
-- `CONCEPT_PLACEHOLDER_WORDS` in `Index.tsx`: 20 domain/concept names (e.g., "Divine Essence", "Taqwa", "Eschatology").
+- `CONCEPT_PLACEHOLDER_WORDS` in `Index.tsx` now uses actual `ayamakna_concepts.name` values (e.g., "Salah", "Jannah & Nar", "Qiyamah") so the placeholder always matches concept-mode search tokens.
 - Second `useTypingPlaceholder` instance (`conceptTypingPlaceholder`, `conceptPlaceholderWord`) runs in parallel with root placeholder.
 - `effectiveSearchQuery` in `Index.tsx` now handles concept mode: uses `conceptPlaceholderWord.toLowerCase()` when no user search is active in concept mode and no node is selected.
 - Search bar `placeholder` shows `conceptTypingPlaceholder` in concept mode (animated cycling).

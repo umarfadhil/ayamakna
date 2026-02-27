@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useImperativeHandle } from 'react';
 import * as d3 from 'd3';
 import type { GraphNode, GraphEdge, GraphRenderData } from '@/engine/visualization/types';
 import type { LinkType, SemanticMode } from '@/engine/semantic/types';
@@ -38,6 +38,10 @@ interface SemanticGraphProps {
   mode: SemanticMode;
   highlightedVerseIds?: Set<string> | null; // when set (root filter active), only these nodes are prominent
   isolatedNodes?: GraphNode[]; // verses with no edges in current mode
+}
+
+export interface SemanticGraphHandle {
+  resetView: () => void;
 }
 
 // --- Spatial Index for fast hit testing ---
@@ -170,7 +174,7 @@ function getContrastNodeColor(hue?: number, rootFreq?: number): string {
   return `hsla(${hue}, ${saturation}%, ${lightness}%, 1)`;
 }
 
-const SemanticGraph: React.FC<SemanticGraphProps> = ({
+const SemanticGraph = React.forwardRef<SemanticGraphHandle, SemanticGraphProps>(({
   data,
   searchQuery,
   onNodeClick,
@@ -179,7 +183,7 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
   mode,
   highlightedVerseIds,
   isolatedNodes = [],
-}) => {
+}, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<d3.Simulation<D3Node, D3Edge> | null>(null);
   const nodesRef = useRef<D3Node[]>([]);
@@ -191,6 +195,11 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
   const timeRef = useRef(0);
   const zoomRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
   const spatialRef = useRef(new SpatialGrid());
+  const hasUserInteractedRef = useRef(false);
+  const autoFitKeyRef = useRef<string | null>(null);
+  const autoFitAttemptRef = useRef(0);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const defaultTransformByKeyRef = useRef<Map<string, d3.ZoomTransform>>(new Map());
   // Search edges: temporary dashed edges connecting matched isolated nodes to nearest matched nodes
   const searchEdgesRef = useRef<Array<{source: D3Node; target: D3Node}>>([]);
   const searchEdgeAlphaRef = useRef(0);       // current rendered opacity (0→0.55, animated)
@@ -239,6 +248,105 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
       (node.searchTokens?.some((t) => t.includes(word)) ?? false)
     ));
   }, [searchQuery]);
+
+  const fitToNodes = useCallback((animate: boolean = true, storeKey?: string) => {
+    const canvas = canvasRef.current;
+    const zoom = zoomRef.current;
+    if (!canvas || !zoom) return false;
+
+    const nodes = nodesRef.current.filter((n) => n.x != null && n.y != null);
+    if (!nodes.length) return false;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const node of nodes) {
+      if (node.x == null || node.y == null) continue;
+      if (node.x < minX) minX = node.x;
+      if (node.x > maxX) maxX = node.x;
+      if (node.y < minY) minY = node.y;
+      if (node.y > maxY) maxY = node.y;
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return false;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    if (!w || !h) return false;
+
+    const width = Math.max(maxX - minX, 1);
+    const height = Math.max(maxY - minY, 1);
+    const padding = Math.min(120, Math.max(60, Math.min(w, h) * 0.12));
+    const k = Math.max(0.15, Math.min(6, Math.min((w - padding * 2) / width, (h - padding * 2) / height)));
+    const tx = w / 2 - (minX + maxX) / 2 * k;
+    const ty = h / 2 - (minY + maxY) / 2 * k;
+    const newTransform = d3.zoomIdentity.translate(tx, ty).scale(k);
+    if (storeKey && !defaultTransformByKeyRef.current.has(storeKey)) {
+      const stored = d3.zoomIdentity.translate(newTransform.x, newTransform.y).scale(newTransform.k);
+      defaultTransformByKeyRef.current.set(storeKey, stored);
+    }
+
+    transformRef.current = newTransform;
+    const selection = d3.select(canvas);
+    if (animate) {
+      selection
+        .transition()
+        .duration(650)
+        .ease(d3.easeCubicInOut)
+        .call(zoom.transform, newTransform);
+    } else {
+      selection.call(zoom.transform, newTransform);
+    }
+    return true;
+  }, []);
+
+  const zoomToNode = useCallback((node: D3Node) => {
+    const canvas = canvasRef.current;
+    const zoom = zoomRef.current;
+    if (!canvas || !zoom || node.x == null || node.y == null) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    const r = Math.max(getNodeRadius(node), 4);
+    const desired = w < 640 ? 18 : 14;
+    let targetK = Math.max(1.6, Math.min(4.2, desired / r));
+    const currentK = transformRef.current.k;
+    targetK = Math.max(targetK, currentK);
+
+    const tx = w / 2 - node.x * targetK;
+    const ty = h / 2 - node.y * targetK;
+    const newTransform = d3.zoomIdentity.translate(tx, ty).scale(targetK);
+
+    d3.select(canvas)
+      .transition()
+      .duration(600)
+      .ease(d3.easeCubicInOut)
+      .call(zoom.transform, newTransform);
+  }, [getNodeRadius]);
+
+  const resetView = useCallback(() => {
+    const canvas = canvasRef.current;
+    const zoom = zoomRef.current;
+    if (!canvas || !zoom) return;
+    const key = `${mode}:${isolatedNodes.length}:${data.nodes.length}`;
+    const stored = defaultTransformByKeyRef.current.get(key);
+    if (stored) {
+      transformRef.current = stored;
+      d3.select(canvas)
+        .transition()
+        .duration(650)
+        .ease(d3.easeCubicInOut)
+        .call(zoom.transform, stored);
+      return;
+    }
+    fitToNodes(true, key);
+  }, [mode, isolatedNodes.length, data.nodes.length, fitToNodes]);
+
+  useImperativeHandle(ref, () => ({ resetView }), [resetView]);
 
   // Deferred search-edge computation: runs off the draw loop so connected highlights appear first.
   // When searchQuery changes, edges are cleared immediately; new edges computed after 80ms.
@@ -416,12 +524,12 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
 
     const draw = () => {
       timeRef.current += 0.016;
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+      const w = canvas.clientWidth || window.innerWidth;
+      const h = canvas.clientHeight || window.innerHeight;
       ctx.clearRect(0, 0, w, h);
       ctx.save();
       const t = transformRef.current;
-      ctx.translate(t.x + w / 2, t.y + h / 2);
+      ctx.translate(t.x, t.y);
       ctx.scale(t.k, t.k);
 
       const nodes = nodesRef.current;
@@ -656,22 +764,24 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-
     const zoom = d3.zoom<HTMLCanvasElement, unknown>()
       .scaleExtent([0.15, 6])
-      .on('zoom', (event) => { transformRef.current = event.transform; });
+      .on('zoom', (event) => {
+        if (event.sourceEvent) hasUserInteractedRef.current = true;
+        transformRef.current = event.transform;
+      });
 
     const sel = d3.select(canvas);
 
     sel.on('wheel.customZoom', (event: WheelEvent) => {
       event.preventDefault();
+      hasUserInteractedRef.current = true;
+      const rect = canvas.getBoundingClientRect();
+      const mx = event.clientX - rect.left;
+      const my = event.clientY - rect.top;
       const currentT = transformRef.current;
       const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
       const newK = Math.max(0.15, Math.min(6, currentT.k * scaleFactor));
-      const mx = event.clientX - w / 2;
-      const my = event.clientY - h / 2;
       const newX = mx - (mx - currentT.x) * (newK / currentT.k);
       const newY = my - (my - currentT.y) * (newK / currentT.k);
       transformRef.current = d3.zoomIdentity.translate(newX, newY).scale(newK);
@@ -679,7 +789,10 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     }, { passive: false });
 
     sel.call(zoom).on('wheel.zoom', null);
-    sel.call(zoom.transform, d3.zoomIdentity.scale(1));
+    const rect = canvas.getBoundingClientRect();
+    const initialTransform = d3.zoomIdentity.translate(rect.width / 2, rect.height / 2).scale(1);
+    transformRef.current = initialTransform;
+    sel.call(zoom.transform, initialTransform);
     zoomRef.current = zoom;
 
     return () => {
@@ -688,13 +801,34 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (hasUserInteractedRef.current) return;
+    const key = `${mode}:${isolatedNodes.length}:${data.nodes.length}`;
+    if (autoFitKeyRef.current === key) return;
+    autoFitKeyRef.current = key;
+    autoFitAttemptRef.current = 0;
+
+    let cancelled = false;
+    const attemptFit = () => {
+      if (cancelled || hasUserInteractedRef.current) return;
+      const didFit = fitToNodes(true, key);
+      autoFitAttemptRef.current += 1;
+      if (!didFit && autoFitAttemptRef.current < 5) {
+        window.setTimeout(attemptFit, 140);
+      }
+    };
+    window.setTimeout(attemptFit, 200);
+    return () => { cancelled = true; };
+  }, [mode, isolatedNodes.length, data.nodes.length, fitToNodes]);
+
   // Hit testing using spatial index
   const getNodeAt = useCallback((mx: number, my: number): D3Node | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
     const t = transformRef.current;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const x = (mx - t.x - w / 2) / t.k;
-    const y = (my - t.y - h / 2) / t.k;
+    const x = (mx - rect.left - t.x) / t.k;
+    const y = (my - rect.top - t.y) / t.k;
 
     const candidates = spatialRef.current.query(x, y, 30);
     let bestNode: D3Node | null = null;
@@ -734,38 +868,45 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
 
     const onDblClick = (e: MouseEvent) => {
       const node = getNodeAt(e.clientX, e.clientY);
-      if (node?.x != null && node?.y != null && zoomRef.current && canvas) {
-        // Zoom to 2.5× centered on the node. Formula: t.x = -node.x * targetK, t.y = -node.y * targetK
-        // because the canvas renders with origin at canvas center (ctx offset by w/2, h/2).
-        const targetK = 2.5;
-        const newTransform = d3.zoomIdentity
-          .translate(-node.x * targetK, -node.y * targetK)
-          .scale(targetK);
-        d3.select(canvas)
-          .transition()
-          .duration(600)
-          .ease(d3.easeCubicInOut)
-          .call(zoomRef.current.transform, newTransform);
+      if (node) zoomToNode(node);
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      hasUserInteractedRef.current = true;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const now = Date.now();
+      const last = lastTapRef.current;
+      if (last && now - last.time < 320 && Math.hypot(x - last.x, y - last.y) < 28) {
+        lastTapRef.current = null;
+        const node = getNodeAt(e.clientX, e.clientY);
+        if (node) zoomToNode(node);
+        return;
       }
+      lastTapRef.current = { time: now, x, y };
     };
 
     canvas.addEventListener('mousemove', onMove);
     canvas.addEventListener('click', onClick);
     canvas.addEventListener('dblclick', onDblClick);
+    canvas.addEventListener('pointerup', onPointerUp);
 
     return () => {
       canvas.removeEventListener('mousemove', onMove);
       canvas.removeEventListener('click', onClick);
       canvas.removeEventListener('dblclick', onDblClick);
+      canvas.removeEventListener('pointerup', onPointerUp);
     };
-  }, [getNodeAt, onNodeClick, onBackgroundClick]);
+  }, [getNodeAt, onNodeClick, onBackgroundClick, zoomToNode]);
 
   return (
     <>
       <canvas
         ref={canvasRef}
         className="fixed inset-0"
-        style={{ zIndex: 1, cursor: 'grab' }}
+        style={{ zIndex: 1, cursor: 'grab', touchAction: 'none' }}
       />
       {hovered && (
         <div
@@ -829,6 +970,6 @@ const SemanticGraph: React.FC<SemanticGraphProps> = ({
       )}
     </>
   );
-};
+});
 
 export default React.memo(SemanticGraph);

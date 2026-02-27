@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings2, X, GitBranch, Layers, Swords, Scale, Eye, EyeOff } from 'lucide-react';
+import { X, GitBranch, Layers, Swords, Scale, Info, RotateCcw } from 'lucide-react';
 import type { SemanticMode } from '@/engine/semantic/types';
 import type { RootFocusLevel, ConceptFocusLevel, ActionFocusLevel, ContrastFocusLevel } from '@/store/semanticStore';
 
@@ -37,6 +37,9 @@ interface MobileControlsFabProps {
   onToggleIsolated: () => void;
   focusLevel: FocusLevel;
   onFocusLevelChange: (level: FocusLevel) => void;
+  onAboutOpen: () => void;
+  onResetView: () => void;
+  visitorCount?: number | null;
 }
 
 const MODES: Array<{ mode: SemanticMode; label: string }> = [
@@ -55,10 +58,11 @@ const MobileControlsFab: React.FC<MobileControlsFabProps> = ({
   onToggleIsolated,
   focusLevel,
   onFocusLevelChange,
+  onAboutOpen,
+  onResetView,
+  visitorCount,
 }) => {
   const [open, setOpen] = useState(false);
-  const ActiveIcon = MODE_ICONS[semanticMode];
-
   return (
     <div className="fixed bottom-4 right-4 md:hidden flex flex-col items-end" style={{ zIndex: 40 }}>
       <AnimatePresence>
@@ -70,6 +74,23 @@ const MobileControlsFab: React.FC<MobileControlsFabProps> = ({
             transition={{ duration: 0.2 }}
             className="glass-panel p-3 rounded-2xl mb-3 flex flex-col gap-3 min-w-[180px]"
           >
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { onAboutOpen(); setOpen(false); }}
+                className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+              >
+                <Info className="w-4 h-4 text-primary" />
+                About AyaMakna
+              </button>
+              <button
+                onClick={() => { onResetView(); setOpen(false); }}
+                className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+              >
+                <RotateCcw className="w-4 h-4 text-primary" />
+                Default View
+              </button>
+            </div>
+
             {/* Mode selector */}
             <div>
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5 block">Mode</span>
@@ -143,7 +164,12 @@ const MobileControlsFab: React.FC<MobileControlsFabProps> = ({
         {open ? (
           <X className="w-5 h-5 text-foreground" />
         ) : (
-          <ActiveIcon className={`w-5 h-5 ${MODE_COLORS[semanticMode]}`} />
+          <div className="flex flex-col items-center leading-none">
+            <Info className="w-4 h-4 text-foreground" />
+            <span className="mt-0.5 text-[10px] font-semibold text-foreground/80">
+              {visitorCount != null ? visitorCount.toLocaleString() : '—'}
+            </span>
+          </div>
         )}
       </button>
     </div>

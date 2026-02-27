@@ -5,6 +5,7 @@
 // =============================================================================
 
 import { createClient } from '@supabase/supabase-js';
+import { getSupabaseEnv } from './_supabaseEnv.mjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -12,8 +13,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(__dirname, '..', 'src', 'data');
 
-const SUPABASE_URL = 'https://pkwvovoiljwjjgbythsp.supabase.co';
-const SUPABASE_ANON_KEY = '[REDACTED_SUPABASE_ANON_KEY]';
+const { url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY } = getSupabaseEnv();
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
