@@ -359,6 +359,21 @@ export type Database = {
         }
         Relationships: []
       }
+      ayamakna_stats: {
+        Row: {
+          id: string
+          visitor_count: number
+        }
+        Insert: {
+          id?: string
+          visitor_count?: number
+        }
+        Update: {
+          id?: string
+          visitor_count?: number
+        }
+        Relationships: []
+      }
       ayamakna_surahs: {
         Row: {
           name: string
@@ -494,7 +509,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      increment_visitor_count: { Args: never; Returns: number }
     }
     Enums: {
       [_ in never]: never

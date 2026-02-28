@@ -178,10 +178,30 @@ const Index = () => {
     return () => {cancelled = true;};
   }, []);
 
-  // Visitor metric — cumulative count from Lovable Analytics.
-  // Update this value periodically from Project Settings → Analytics.
+  // Visitor metric — real-time from Supabase
   useEffect(() => {
-    setVisitorCount(51);
+    const PROJECT_ID = import.meta.env.VITE_SUPABASE_PROJECT_ID ?? 'pkwvovoiljwjjgbythsp';
+    const BASE = `https://${PROJECT_ID}.supabase.co/functions/v1`;
+    const visited = localStorage.getItem('ayamakna_visited');
+
+    const run = async () => {
+      try {
+        const action = visited ? 'get' : 'increment';
+        const res = await fetch(`${BASE}/track-visitor`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        const json = await res.json();
+        if (json.count != null) {
+          setVisitorCount(json.count);
+          if (!visited) localStorage.setItem('ayamakna_visited', '1');
+        }
+      } catch (err) {
+        console.warn('Visitor metric unavailable:', err);
+      }
+    };
+    run();
   }, []);
 
   const graphData = useMemo(
