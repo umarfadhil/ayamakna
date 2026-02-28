@@ -178,24 +178,10 @@ const Index = () => {
     return () => {cancelled = true;};
   }, []);
 
-  // Visitor metric (client-local unique visitors)
+  // Visitor metric — cumulative count from Lovable Analytics.
+  // Update this value periodically from Project Settings → Analytics.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const idKey = 'ayamakna_visitor_id';
-      const countKey = 'ayamakna_visitor_count';
-      let count = Number(localStorage.getItem(countKey) ?? '0');
-      if (!localStorage.getItem(idKey)) {
-        const id = (crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-        localStorage.setItem(idKey, id);
-        count += 1;
-        localStorage.setItem(countKey, String(count));
-      }
-      setVisitorCount(count);
-    } catch (err) {
-      console.warn('Visitor metric unavailable:', err);
-      setVisitorCount(null);
-    }
+    setVisitorCount(51);
   }, []);
 
   const graphData = useMemo(
